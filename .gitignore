@@ -1,0 +1,24 @@
+# Build outputs
+build/
+.build/
+.swiftpm/
+DerivedData/
+dist/
+
+# SwiftPM
+Package.resolved
+*.xcodeproj/
+*.xcworkspace/
+
+# macOS
+.DS_Store
+._*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Internal notes
+POLISH.md
