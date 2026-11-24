@@ -58,7 +58,7 @@ shadow. Ready for a slide, a tweet or a README.
 |:---|:---|
 | **Scan text & QR codes** | Select any area and the text or link is copied. Uses Apple Vision, entirely on your Mac. |
 | **Scrolling capture** | Scroll the content yourself and QuickCap stitches it as you go. |
-| **Pin to Desktop** | Float a capture above every window. Pinch or scroll to zoom. |
+| **Pin to Desktop** | Float a capture above every window. Zoom, fade it to any opacity, or lock it so clicks pass through. Pins come back after a restart, and you can pin whatever image is on the clipboard or mark one up in place. |
 | **Window captures** | Keep the real macOS shadow (hold ⌥ to leave it out), on a transparent background or your desktop wallpaper, dynamic ones included. |
 | **HDR** | On HDR displays, captures keep their HDR brightness (HEIC with a gain map). |
 | **Timer** | 3, 5 or 10 seconds, for menus and hover states. |
@@ -75,8 +75,9 @@ every capture from the menu bar. Change them anytime in Settings.
 
 ### Settings that stay out of the way
 
-Save location, format (HEIC, PNG or JPEG), copy and save together,
-Shelf side and auto-hide, scan language, open at login.
+Save location, format (HEIC, PNG or JPEG), scale Retina captures to 1×,
+convert to sRGB, hide desktop icons, snap to buttons and fields, copy and
+save together, Shelf side and auto-hide, scan language, open at login.
 
 <p align="center">
   <img src="screenshots/settings.png" width="760" alt="Settings" />

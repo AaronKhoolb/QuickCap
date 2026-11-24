@@ -407,6 +407,8 @@ private struct CapturePane: View {
     @ObservedObject var settings: AppSettings
     /// 正在搬旧截图：搬完前不能再换文件夹
     @State private var moving = false
+    /// 权限状态变了让提示刷新（打开设置页、点开关时）
+    @State private var axTick = 0
 
     var body: some View {
         Page {
@@ -440,9 +442,12 @@ private struct CapturePane: View {
                 .labelsHidden()
                 .fixedSize()
                 Check("Keep HDR when the display shows it",
-                      hint: settings.captureFormat.keepsHDR ? nil : "Only HEIC can keep HDR.",
+                      hint: hdrHint,
                       isOn: $settings.captureHDR)
-                    .disabled(!settings.captureFormat.keepsHDR)
+                    .disabled(!settings.captureFormat.keepsHDR || settings.scaleToStandard || settings.convertToSRGB)
+                Check("Scale Retina captures to 1×", hint: "Half the pixels; looks the same size in documents and on the web.",
+                      isOn: $settings.scaleToStandard)
+                Check("Convert to sRGB", hint: "More consistent colors on other computers and browsers.", isOn: $settings.convertToSRGB)
             }
             Row("After capture") {
                 Check("Copy to clipboard", isOn: $settings.captureCopy)
@@ -458,11 +463,14 @@ private struct CapturePane: View {
                       isOn: $settings.freezeScreen)
                     .disabled(settings.captureTimer > 0)
                 Check("Snap to edges", isOn: $settings.snapToEdges)
+                Check("Also snap to buttons and fields", hint: elementHint, isOn: elementBinding)
+                    .disabled(!settings.snapToEdges)
                 Check("Show magnifier", isOn: $settings.showMagnifier)
                 Check("Remember last selection", isOn: $settings.rememberSelection)
             }
             Row("Include") {
                 Check("Mouse pointer", isOn: $settings.showPointer)
+                Check("Hide desktop icons while capturing", isOn: $settings.hideDesktopIcons)
             }
         }
     }
@@ -470,6 +478,26 @@ private struct CapturePane: View {
     private static let folders: [(name: String, path: String)] = [
         ("QuickCap", AppSettings.defaultScreenshotFolder), ("Desktop", "~/Desktop"), ("Documents", "~/Documents"),
     ]
+
+    /// 打开时要辅助功能权限：没有就由 app 发起请求（系统把 QuickCap 列进去，用户只开开关）
+    private var elementBinding: Binding<Bool> {
+        Binding(get: { settings.snapToUIElements }, set: { on in
+            settings.snapToUIElements = on
+            if on, !UIElementEdges.isTrusted { UIElementEdges.requestAccess() }
+            axTick += 1
+        })
+    }
+    private var elementHint: String? {
+        _ = axTick
+        guard settings.snapToUIElements else { return nil }
+        return UIElementEdges.isTrusted ? nil : "Needs Accessibility. Turn on QuickCap in System Settings."
+    }
+
+    private var hdrHint: String? {
+        if !settings.captureFormat.keepsHDR { return "Only HEIC can keep HDR." }
+        if settings.scaleToStandard || settings.convertToSRGB { return "Off while scaling to 1× or converting to sRGB." }
+        return nil
+    }
 
     private var folderName: String {
         FileManager.default.displayName(atPath: (settings.screenshotFolder as NSString).expandingTildeInPath)

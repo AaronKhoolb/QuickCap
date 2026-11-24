@@ -190,12 +190,17 @@ final class CaptureSession {
 
     // MARK: 冻结屏幕
 
+    /// 打开时读到的界面元素边框（全局坐标）。没开这个设置或没权限就是空的
+    private var uiElementFrames: [CGRect] = []
+
     private func freezeAndShow() async {
         let frozen: [Shot]
         recordCursor()
         do {
             // 要显示鼠标指针的话，鼠标所在那块屏幕再截一张带指针的（只用来出图，界面上显示的不带指针）
             let pointerScreen = settings.showPointer ? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }?.displayID : nil
+            // 界面元素的边框要在截图界面盖上去之前读（最多 0.15 秒）
+            uiElementFrames = settings.snapToUIElements && settings.snapToEdges ? UIElementEdges.frames() : []
             frozen = try await Self.captureAllScreens(pointerOn: pointerScreen, hdr: wantsHDR)
         } catch {
             NSLog("QuickCap capture failed: \(error)")
@@ -224,10 +229,21 @@ final class CaptureSession {
 
     /// 每块屏幕截一张原始分辨率的图，不包括 QuickCap 自己的窗口（悬挂架、把手、截图界面）。
     /// pointerOn 那块屏幕再截一张带鼠标指针的
+    /// 调试用：上次冻结时排除了哪些窗口
+    static var debugExcluded = "-"
+
     private static func captureAllScreens(pointerOn: CGDirectDisplayID? = nil, hdr: Bool) async throws -> [Shot] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let pid = ProcessInfo.processInfo.processIdentifier
-        let ours = content.windows.filter { $0.owningApplication?.processID == pid }
+        var ours = content.windows.filter { $0.owningApplication?.processID == pid }
+        // 设置里"截图时隐藏桌面图标"：把 Finder 画桌面图标的那几个窗口也排除掉（不用重启 Finder，桌面上的图标不动）
+        if AppSettings.shared.hideDesktopIcons {
+            let iconLevel = Int(CGWindowLevelForKey(.desktopIconWindow))
+            ours += content.windows.filter {
+                $0.owningApplication?.bundleIdentifier == "com.apple.finder" && $0.windowLayer == iconLevel
+            }
+        }
+        debugExcluded = "ours=\(ours.filter { $0.owningApplication?.processID == pid }.count) finderIcons=\(ours.filter { $0.owningApplication?.bundleIdentifier == "com.apple.finder" }.count)"
         // 美化背景的 Desktop Wallpaper 用：顺便截下这一刻的系统壁纸（动态壁纸也行），不等它
         Task.detached(priority: .utility) { await BeautyBackground.captureLive(content) }
         var result: [Shot] = []
@@ -293,6 +309,7 @@ final class CaptureSession {
             let screen = shot.screen
             let w = CaptureOverlayWindow(screen: screen, frozen: shot.image, session: self)
             w.overlayView.setSnapshot(shot.image, output: shot.withPointer, hdr: shot.hdr, outputHDR: shot.withPointerHDR)
+            if !uiElementFrames.isEmpty { w.overlayView.setUIElements(UIElementEdges.local(uiElementFrames, on: screen)) }
             if !frozenMode { w.overlayView.setLive(true) }
             overlays.append(w)
             if screen == home {
@@ -1300,8 +1317,7 @@ final class CaptureSession {
         Task { @MainActor [weak self, weak v] in
             let codes = await ScannedCode.detect(in: image, size: size)
             let recognized = codes.isEmpty ? await text.value : ""
-            // 调试：HS_SCAN_HOLD=秒 让光多亮一会儿（截图看样子）
-            let hold = ProcessInfo.processInfo.environment["HS_SCAN_HOLD"].flatMap(Double.init) ?? 0.3
+            let hold = 0.3
             let wait = hold - Date().timeIntervalSince(started)
             if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
             finished = true

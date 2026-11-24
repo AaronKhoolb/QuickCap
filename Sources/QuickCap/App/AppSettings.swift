@@ -141,6 +141,8 @@ final class AppSettings: ObservableObject {
     /// 计时秒数，0 表示不计时
     @Published var captureTimer: Int { didSet { if persist { UserDefaults.standard.set(captureTimer, forKey: "captureTimer") } } }
     @Published var snapToEdges: Bool { didSet { saveBool("snapToEdges", snapToEdges) } }
+    /// 吸附界面元素（按钮、文本框、列表……）：要辅助功能权限，默认关
+    @Published var snapToUIElements: Bool { didSet { saveBool("snapToUIElements", snapToUIElements) } }
     @Published var showMagnifier: Bool { didSet { saveBool("showMagnifier", showMagnifier) } }
     @Published var freezeScreen: Bool { didSet { saveBool("freezeScreen", freezeScreen) } }
     @Published var showPointer: Bool { didSet { saveBool("showPointer", showPointer) } }
@@ -165,6 +167,12 @@ final class AppSettings: ObservableObject {
     @Published var scanKeepLineBreaks: Bool { didSet { saveBool("scanKeepLineBreaks", scanKeepLineBreaks) } }
     /// 截图文件存成哪种格式
     @Published var captureFormat: CaptureOutput.Format { didSet { save("captureFormat", captureFormat.rawValue) } }
+    /// 存的文件和剪贴板缩到 1 倍（Retina 屏上截的图一半大小，贴到网页、文档里不会显得太大）
+    @Published var scaleToStandard: Bool { didSet { saveBool("scaleToStandard", scaleToStandard) } }
+    /// 存成 sRGB（Display P3 的颜色在别的电脑、浏览器上更一致）。开了就不存 HDR
+    @Published var convertToSRGB: Bool { didSet { saveBool("convertToSRGB", convertToSRGB) } }
+    /// 截图时把桌面上的图标藏起来（Finder 的 CreateDesktop，截完放回来）
+    @Published var hideDesktopIcons: Bool { didSet { saveBool("hideDesktopIcons", hideDesktopIcons) } }
     /// 上次的自由框选（屏幕坐标），"记住上次选区"和 R 键用
     var lastCaptureRect: CGRect? {
         didSet {
@@ -215,6 +223,7 @@ final class AppSettings: ObservableObject {
         captureMode = CaptureMode(rawValue: d.string(forKey: "captureMode") ?? "") ?? .area
         captureTimer = d.object(forKey: "captureTimer") as? Int ?? 0
         snapToEdges = d.object(forKey: "snapToEdges") as? Bool ?? true
+        snapToUIElements = d.object(forKey: "snapToUIElements") as? Bool ?? false
         showMagnifier = d.object(forKey: "showMagnifier") as? Bool ?? false
         freezeScreen = d.object(forKey: "freezeScreen") as? Bool ?? true
         showPointer = d.object(forKey: "showPointer") as? Bool ?? false
@@ -225,6 +234,9 @@ final class AppSettings: ObservableObject {
         windowWallpaper = d.object(forKey: "windowWallpaper") as? Bool ?? false
         scanLanguage = d.string(forKey: "scanLanguage") ?? "auto"
         scanKeepLineBreaks = d.object(forKey: "scanKeepLineBreaks") as? Bool ?? true
+        scaleToStandard = d.object(forKey: "scaleToStandard") as? Bool ?? false
+        convertToSRGB = d.object(forKey: "convertToSRGB") as? Bool ?? false
+        hideDesktopIcons = d.object(forKey: "hideDesktopIcons") as? Bool ?? false
         captureFormat = d.string(forKey: "captureFormat").flatMap(CaptureOutput.Format.init(rawValue:)) ?? .heic
         screenshotFolder = d.string(forKey: "screenshotFolder") ?? Self.defaultScreenshotFolder
         captureSound = d.object(forKey: "captureSound") as? Bool ?? false

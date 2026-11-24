@@ -137,6 +137,24 @@ enum CaptureOutput {
         }
     }
 
+    /// 存之前按设置改一下图：缩到 1 倍、换成 sRGB（这两样都不保留 HDR 那张）。
+    /// 返回改好的图和新的倍数；都没开就原样返回
+    nonisolated static func prepared(_ image: CGImage, hdr: CGImage?, scale: CGFloat, toStandard: Bool, toSRGB: Bool)
+        -> (image: CGImage, hdr: CGImage?, scale: CGFloat) {
+        guard toStandard || toSRGB else { return (image, hdr, scale) }
+        let k = toStandard && scale > 1 ? 1 / scale : 1
+        let w = max(1, Int((CGFloat(image.width) * k).rounded())), h = max(1, Int((CGFloat(image.height) * k).rounded()))
+        let space = toSRGB ? CGColorSpace(name: CGColorSpace.sRGB) : (image.colorSpace ?? CGColorSpace(name: CGColorSpace.displayP3))
+        guard let space,
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return (image, hdr, scale) }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let out = ctx.makeImage() else { return (image, hdr, scale) }
+        // 缩小后 HDR 那张对不上了；sRGB 本来就放不下 HDR
+        return (out, nil, k < 1 ? 1 : scale)
+    }
+
     /// 按设置的格式出文件。HDR 的图只有 HEIC 留得住
     nonisolated static func fileData(_ image: CGImage, hdr: CGImage?, scale: CGFloat, screenHeadroom: CGFloat,
                                      format: Format) -> (Data, String)? {
@@ -260,6 +278,8 @@ enum CaptureOutput {
     nonisolated static func displayP3(_ image: CGImage) -> CGImage {
         guard let p3 = CGColorSpace(name: CGColorSpace.displayP3) else { return image }
         if image.colorSpace?.name == CGColorSpace.displayP3 { return image }
+        // 用户选了存 sRGB：别再换回 P3
+        if image.colorSpace?.name == CGColorSpace.sRGB { return image }
         let bpc = image.bitsPerComponent > 8 ? 16 : 8
         let info = CGImageAlphaInfo.premultipliedLast.rawValue | (bpc == 16 ? CGBitmapInfo.byteOrder16Little.rawValue : 0)
         guard let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: bpc,

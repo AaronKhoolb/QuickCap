@@ -37,6 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
+    func applicationWillTerminate(_ notification: Notification) { PinWindow.flushState() }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if handOffToRunningInstance() { return }
         DistributedNotificationCenter.default().addObserver(forName: Self.reopenNote, object: nil, queue: .main) { [weak self] _ in
@@ -52,6 +54,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         TextRecognizer.warmUp()
         DebugOptions.apply(to: self)
         welcome.onOpenSettings = { [weak self] in self?.openSettings() }
+        PinWindow.onAnnotate = { [weak self] in self?.annotate($0) }
+        // 上次钉着的图放回原处（调试运行不放，免得测试时满屏钉图）
+        if !DebugOptions.isDebugRun { PinWindow.restore() }
         // 第一次打开（或者上次看到一半、为了权限重新打开了）
         if !DebugOptions.isDebugRun, WelcomeWindowController.shouldShow { welcome.show() }
     }
@@ -219,6 +224,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggleItem = item("Show Shelf", #selector(toggleShelf), symbol: "rectangle.stack")
         menu.addItem(toggleItem)
         menu.addItem(item("Open Screenshots Folder", #selector(openFolder), symbol: "folder"))
+        // 钉图：有钉着的才出现（锁住的钉图点不到，只能从这里解开）
+        let fromClip = item("Pin from Clipboard", #selector(pinFromClipboard), symbol: "pin")
+        menu.addItem(fromClip)
+        pinClipboardItem = fromClip
+        let unlock = item("Unlock Pins", #selector(unlockPins), symbol: "lock.open")
+        let closePins = item("Close All Pins", #selector(closeAllPins), symbol: "pin.slash")
+        menu.addItem(unlock)
+        menu.addItem(closePins)
+        (unlockPinsItem, closePinsItem) = (unlock, closePins)
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(openSettings), key: ",", modifiers: [.command], symbol: "gearshape"))
         menu.addItem(item("Quit QuickCap", #selector(NSApplication.terminate(_:)), key: "q", modifiers: [.command], target: NSApp,
@@ -229,6 +243,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var timerMenu: NSMenu?
     private var areaItem: NSMenuItem?, windowItem: NSMenuItem?, screenItem: NSMenuItem?
+    private var unlockPinsItem: NSMenuItem?, closePinsItem: NSMenuItem?, pinClipboardItem: NSMenuItem?
+
+    @objc private func pinFromClipboard() { if !PinWindow.pinFromClipboard() { NSSound.beep() } }
+
+    /// 菜单会自动启用有 action 的项：这里决定"Pin from Clipboard"灰不灰
+    @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem === pinClipboardItem { return PinWindow.clipboardHasImage }
+        return true
+    }
+
+    @objc private func unlockPins() { PinWindow.unlockAll() }
+    @objc private func closeAllPins() { PinWindow.closeAll() }
 
     /// 菜单项前面的线条图标（和系统菜单里的一样大小）
     private static func menuSymbol(_ name: String) -> NSImage? {
@@ -270,6 +296,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         toggleItem.title = shelf.isShown ? "Hide Shelf" : "Show Shelf"
         for i in timerMenu?.items ?? [] { i.state = i.tag == settings.captureTimer ? .on : .off }
+        unlockPinsItem?.isHidden = !PinWindow.anyLocked
+        closePinsItem?.isHidden = PinWindow.debugCount == 0
     }
 
     @objc private func setTimer(_ sender: NSMenuItem) { settings.captureTimer = sender.tag }
@@ -321,14 +349,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 文件：最高质量的 HEIC（有 HDR 内容时带增益图）；写不了 HEIC 就退回 PNG。剪贴板放普通的 PNG，贴到哪里都能用。
         // 编码在后台做（大的 HDR 截图要零点几秒），截好的图飞出去的动画不等它
         let box = EncodeInput(image: c.image, hdr: c.hdr, scale: c.scale, headroom: c.screenHeadroom, copy: out == .saveAndCopy,
-                              format: settings.captureFormat)
+                              format: settings.captureFormat, toStandard: settings.scaleToStandard, toSRGB: settings.convertToSRGB)
         let date = Date()
         let folder = shelfFolder
         Task.detached(priority: .userInitiated) {
-            let made = CaptureOutput.fileData(box.image, hdr: box.hdr, scale: box.scale, screenHeadroom: box.headroom,
+            // 设置里的缩到 1 倍、存成 sRGB：文件和剪贴板都按改过的；钉图、截图架的动画还用原来的
+            let p = CaptureOutput.prepared(box.image, hdr: box.hdr, scale: box.scale, toStandard: box.toStandard, toSRGB: box.toSRGB)
+            let made = CaptureOutput.fileData(p.image, hdr: p.hdr, scale: p.scale, screenHeadroom: box.headroom,
                                               format: box.format)
-            let png = box.copy ? CaptureOutput.pngData(box.image, scale: box.scale) : nil
-            let thumb = CaptureOutput.thumbnail(box.image, maxPixel: ShelfThumbnails.maxPixel)
+            let png = box.copy ? CaptureOutput.pngData(p.image, scale: p.scale) : nil
+            let thumb = CaptureOutput.thumbnail(p.image, maxPixel: ShelfThumbnails.maxPixel)
             let result = EncodeOutput(file: made?.0, ext: made?.1 ?? "png", png: png, thumbnail: thumb)
             await MainActor.run { self.finishDelivery(c, out, result, date: date, folder: folder, toastAt: toastAt) }
         }
@@ -337,6 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private struct EncodeInput: @unchecked Sendable {
         let image: CGImage, hdr: CGImage?, scale: CGFloat, headroom: CGFloat, copy: Bool
         let format: CaptureOutput.Format
+        var toStandard = false, toSRGB = false
     }
     private struct EncodeOutput: @unchecked Sendable {
         let file: Data?, ext: String, png: Data?, thumbnail: CGImage?
@@ -489,6 +520,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.shelf.endEdit(fadeIn: false)
             }
         }
+        e.present(from: from)
+    }
+
+    /// 钉图右键 Annotate…：用截图架那个编辑器，从钉图的位置放大出去。
+    /// Replace：写回文件，钉图换成新图（截图架上那张也跟着换）；Save as New：新的一张飞上截图架，钉图不变
+    func annotate(_ pin: PinWindow) {
+        guard ImageEditor.current == nil, capture == nil, let url = pin.fileURL, let item = ShelfItem.load(url) else { NSSound.beep(); return }
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { NSSound.beep(); return }
+        let gm = CGImageSourceCopyAuxiliaryDataInfoAtIndex(src, 0, kCGImageAuxiliaryDataTypeISOGainMap) != nil
+        let hdr = gm ? CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR] as CFDictionary) : nil
+        let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
+        let typeID = CGImageSourceGetType(src) as String?
+        let screen = pin.screen ?? NSScreen.main ?? NSScreen.screens[0]
+        let dpi = (props?[kCGImagePropertyDPIWidth] as? NSNumber).map { CGFloat(truncating: $0) } ?? 0
+        let scale = dpi >= 72 ? dpi / 72 : screen.backingScaleFactor
+        let headroom = max(1, CGFloat(hdr?.contentHeadroom ?? 1))
+        let from = pin.frame
+        let e = ImageEditor(mode: .edit, image: img, hdr: hdr, scale: scale, screen: screen, headroom: headroom,
+                            fileURL: url, settings: settings)
+        e.sourceCorner = 6
+        // 收回去：回到钉图现在的位置（换了图就按新图的比例）
+        e.cardFrame = { [weak pin] px in
+            guard let pin else { return nil }
+            let f = pin.frame
+            guard let px, px.width > 0, px.height > 0 else { return f }
+            let h = f.width * px.height / px.width
+            return CGRect(x: f.minX, y: f.maxY - h, width: f.width, height: h)
+        }
+        e.flightTarget = { [weak self] s in self?.shelf.flightTarget(on: s) }
+        e.onSaveAsNew = { [weak self] c in
+            guard let self else { return }
+            self.deliver(c, self.settings.captureCopy ? .saveAndCopy : .save, toastAt: nil)
+        }
+        var written: ((Bool) -> Void)?
+        var result: Bool?
+        e.onReplace = { [weak self, weak pin] out, outHDR in
+            pin?.replaceImage(out, hdr: outHDR, pointSize: CGSize(width: CGFloat(out.width) / scale, height: CGFloat(out.height) / scale))
+            self?.writeBack(item, image: out, hdr: outHDR, scale: scale, headroom: headroom, typeID: typeID) { ok in
+                result = ok
+                written?(ok)
+            }
+        }
+        e.onClose = { [weak pin] outcome in
+            if case .replaced = outcome {
+                e.closeGate = { finish in
+                    let land = { (_: Bool) in pin?.setHiddenForEditing(false); finish() }
+                    if let r = result { land(r) } else { written = land }
+                }
+            } else {
+                pin?.setHiddenForEditing(false)
+            }
+        }
+        pin.setHiddenForEditing(true)
         e.present(from: from)
     }
 

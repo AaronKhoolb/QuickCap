@@ -138,6 +138,30 @@ enum Metrics {
     }
 }
 
+/// 系统设置里的"减少透明度"或"增加对比度"。玻璃（NSGlassEffectView）系统自己会换成实底；
+/// 这里给我们自己画的半透明小标签用：开着时用实底，字更清楚
+@MainActor
+enum ReduceTransparency {
+    private static var cached: Bool?
+    private static var observer: NSObjectProtocol?
+
+    static var isOn: Bool {
+        if let cached { return cached }
+        if observer == nil {
+            observer = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
+            ) { _ in MainActor.assumeIsolated { cached = nil } }
+        }
+        let ws = NSWorkspace.shared
+        let v = ws.accessibilityDisplayShouldReduceTransparency || ws.accessibilityDisplayShouldIncreaseContrast
+        cached = v
+        return v
+    }
+
+    /// 深色小标签的底：平时半透明，开着时几乎不透明
+    static func chip(_ alpha: CGFloat) -> CGColor { NSColor(white: 0, alpha: isOn ? 0.92 : alpha).cgColor }
+}
+
 /// 系统设置里的"减少动态效果"。开着时卡片不摆、不晃、掉落不转，飞入和展开照常（那是位置变化，不是装饰）
 @MainActor
 enum ReduceMotion {

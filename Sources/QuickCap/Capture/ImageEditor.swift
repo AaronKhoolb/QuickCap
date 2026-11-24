@@ -309,7 +309,7 @@ final class EditorView: NSView {
         zoomPill.textColor = .white
         zoomPill.alignment = .center
         zoomPill.wantsLayer = true
-        zoomPill.layer?.backgroundColor = NSColor(white: 0, alpha: 0.5).cgColor
+        zoomPill.layer?.backgroundColor = ReduceTransparency.chip(0.5)
         zoomPill.layer?.cornerRadius = 9
         zoomPill.alphaValue = 0
         addSubview(zoomPill)

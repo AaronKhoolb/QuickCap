@@ -8,6 +8,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-release}"
+# 项目放在 Google Drive 里时，Drive 会把编译时删了又建的 QuickCap.dSYM 当成冲突，
+# 留下一个空文件和 "QuickCap 2.dSYM"，下一次生成 dSYM 就报 "Not a directory"。先清掉
+PRODUCTS=".build/out/Products/$( [ "$CONFIG" = release ] && echo Release || echo Debug )"
+for stale in "$PRODUCTS/QuickCap.dSYM" "$PRODUCTS/QuickCap 2.dSYM"; do
+    if [ -f "$stale" ] || [[ "$stale" == *" 2.dSYM" && -d "$stale" ]]; then rm -rf -- "$stale"; fi
+done
 swift build -c "$CONFIG"
 BIN="$(swift build -c "$CONFIG" --show-bin-path)/QuickCap"
 

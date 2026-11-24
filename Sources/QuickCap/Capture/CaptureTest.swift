@@ -150,6 +150,43 @@ enum CaptureTest {
         case "scroll-state":
             write(log, "[scroll-state \(args.joined(separator: " "))] \(a.captureForDebug?.debugScroll ?? "no session")\n")
             return 0.05
+        case "pin-clip":
+            // 剪贴板里的图钉出来（先用 copy-newest 或 pbcopy 放一张）
+            write(log, "pin-clip ok=\(PinWindow.pinFromClipboard()) \(PinWindow.debugText)\n"); return 0.4
+        case "pin-key":
+            // pin-key <名字> [mods]：给最上面那张钉图送一个键（不用真的点它）
+            PinWindow.debugKey(args.first ?? "", mods: args.dropFirst().first ?? ""); return 0.2
+        case "pin-lock":
+            PinWindow.debugLast?.setLocked(args.first != "off"); if args.first == "off" { PinWindow.unlockAll() }; return 0.2
+        case "pin-save":
+            PinWindow.flushState()
+            let s = (try? String(contentsOf: PinWindow.stateURL, encoding: .utf8)) ?? "-"
+            write(log, "pin-save \(s)\n"); return 0.1
+        case "pin-closeall":
+            PinWindow.closeAll(); return 0.4
+        case "pin-restore":
+            PinWindow.restore(); write(log, "pin-restore \(PinWindow.debugText)\n"); return 0.4
+        case "ax-probe":
+            // 辅助功能读得到几个元素（不开截图界面）、截图界面里有几条元素吸附线
+            let f = UIElementEdges.frames()
+            let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "-"
+            write(log, "[ax-probe] trusted=\(UIElementEdges.isTrusted) front=\(app) elements=\(f.count) overlayLines=\(a.captureForDebug?.overlays.first?.overlayView.elementSnapCount ?? -1)\n")
+            return 0.05
+        case "excluded":
+            write(log, "[excluded] \(CaptureSession.debugExcluded)\n"); return 0.05
+        case "pin-annotate":
+            // 最上面那张钉图打开编辑器（Replace 后看钉图和文件有没有换）
+            if let p = PinWindow.debugLast { a.annotate(p) }
+            write(log, "[pin-annotate] editor=\(ImageEditor.current != nil) \(PinWindow.debugText)\n"); return 1.0
+        case "editor-replace":
+            // 编辑器直接按"存回去"（不用找按钮），并且加一圈 G 键那种美化背景让尺寸变
+            if args.first == "beauty" { ImageEditor.current?.view.toggleBeauty() }
+            ImageEditor.current?.primary(nil, save: .replace); return 2.0
+        case "pin-file":
+            if let p = PinWindow.debugLast, let url = p.fileURL, let (img, _) = PinWindow.loadImage(url) {
+                write(log, "[pin-file] file=\(img.width)x\(img.height) shown=\(p.currentImage.width)x\(p.currentImage.height) \(PinWindow.debugText)\n")
+            } else { write(log, "[pin-file] none\n") }
+            return 0.05
         case "pins":
             write(log, "[pins \(args.joined(separator: " "))] \(PinWindow.debugText)\n")
             return 0.05
@@ -174,6 +211,11 @@ enum CaptureTest {
                 if p[0] == "remember" { AppSettings.shared.rememberSelection = p[1] == "1" }
                 if p[0] == "hdr" { AppSettings.shared.captureHDR = p[1] == "1" }
                 if p[0] == "wallpaper" { AppSettings.shared.windowWallpaper = p[1] == "1" }
+                if p[0] == "onex" { AppSettings.shared.scaleToStandard = p[1] == "1" }
+                if p[0] == "srgb" { AppSettings.shared.convertToSRGB = p[1] == "1" }
+                if p[0] == "icons" { AppSettings.shared.hideDesktopIcons = p[1] == "1" }
+                if p[0] == "ax" { AppSettings.shared.snapToUIElements = p[1] == "1" }
+                if p[0] == "format", let f = CaptureOutput.Format(rawValue: String(p[1])) { AppSettings.shared.captureFormat = f }
             }
             a.captureForDebug?.actionBar?.refresh()
             return 0.1

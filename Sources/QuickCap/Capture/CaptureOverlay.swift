@@ -99,10 +99,15 @@ final class CaptureOverlayView: NSView {
     /// 窗口边、屏幕边、菜单栏下沿，加上画面里的长直线
     private var allVertical: [SnapLines.Segment] = []
     private var allHorizontal: [SnapLines.Segment] = []
+    /// 界面元素的边（辅助功能读的，设置里开了才有）
+    private var elementSnaps: (vertical: [SnapLines.Segment], horizontal: [SnapLines.Segment]) = ([], []) { didSet { mergeSnapLines() } }
     private func mergeSnapLines() {
-        allVertical = snaps.vertical + (contentEdges?.vertical ?? [])
-        allHorizontal = snaps.horizontal + (contentEdges?.horizontal ?? [])
+        allVertical = snaps.vertical + (contentEdges?.vertical ?? []) + elementSnaps.vertical
+        allHorizontal = snaps.horizontal + (contentEdges?.horizontal ?? []) + elementSnaps.horizontal
     }
+    /// 调试用：吸附线里有几条来自界面元素
+    var elementSnapCount: Int { elementSnaps.vertical.count + elementSnaps.horizontal.count }
+    func setUIElements(_ rects: [CGRect]) { elementSnaps = UIElementEdges.segments(rects, screenSize: bounds.size) }
     let screenRef: NSScreen
 
     /// 这块屏幕上的选区。nil 表示还没框
@@ -834,8 +839,7 @@ final class CaptureOverlayView: NSView {
         a.values = [0, 0.95, 0]
         a.keyTimes = [0, 0.18, 1]
         a.timingFunctions = [CAMediaTimingFunction(name: .easeOut), CAMediaTimingFunction(name: .easeIn)]
-        // 调试：HS_FLASH_SLOW=倍数 把闪光放慢（截图看样子）
-        a.duration = 0.42 * (ProcessInfo.processInfo.environment["HS_FLASH_SLOW"].flatMap(Double.init) ?? 1)
+        a.duration = 0.42
         clip.add(a, forKey: "flash")
     }
 

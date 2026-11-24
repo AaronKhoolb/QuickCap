@@ -47,20 +47,14 @@ final class ScanGlow {
                 saturation = Float(0.3 - 0.1 * k)
                 nestedGain = true
             case .orange, .white, .cool:
-                // 调试：defaults write <bundle id> glowGain 4（或环境变量 HS_GLOW_GAIN、HS_GLOW_SAT）
-                gain = Self.tuned("HS_GLOW_GAIN", "glowGain") ?? Float(h > 1 ? 2.4 : 1.5)
+                gain = Float(h > 1 ? 2.4 : 1.5)
                 // 光晕比细线暗得多：三层都用同一个增益叠在一起，橙色会被冲成白色
-                haloGain = Self.tuned("HS_GLOW_HALO", "glowHalo") ?? gain * 0.45
-                saturation = Self.tuned("HS_GLOW_SAT", "glowSat") ?? 1
+                haloGain = gain * 0.45
+                saturation = 1
                 nestedGain = false
             }
         }
 
-        private static func tuned(_ env: String, _ key: String) -> Float? {
-            if let v = ProcessInfo.processInfo.environment[env].flatMap(Float.init) { return v }
-            let d = UserDefaults.standard.float(forKey: key)
-            return d > 0 ? d : nil
-        }
     }
 
     let tint: Tint
