@@ -367,6 +367,18 @@ enum CaptureTest {
         case "countdown-bar":
             write(log, "[countdown-bar \(args.joined(separator: " "))] \(a.captureForDebug?.debugCountdownBar ?? "no session") overlayIgnoresMouse=\(a.captureForDebug?.overlays.first?.ignoresMouseEvents ?? false)\n")
             return 0.05
+        case "scroll-start":
+            a.captureForDebug?.startScrolling(); return 1.0
+        case "cancel":
+            a.captureForDebug?.cancel(); return 1.0
+        case "hotkeys":
+            write(log, "[hotkeys \(args.joined(separator: " "))] ids=\(HotKeyCenter.shared.debugIDs) escape=\(AppSettings.HotKeyID.captureEscape.rawValue) session=\(a.captureForDebug != nil)\n"); return 0.05
+        case "accept":
+            // accept opt+shift s：录快捷键时按这个组合收不收
+            let code: UInt16 = ["s": 1, "a": 0, "c": 8, "v": 9, "z": 6, "1": 18][args.last ?? ""] ?? 1
+            let ev = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods(args.first), timestamp: 0, windowNumber: 0,
+                                      context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code)
+            write(log, "[accept \(args.joined(separator: " "))] \(ev.flatMap(HotKey.init(event:))?.display ?? "rejected")\n"); return 0.05
         case "countdown-cancel":
             a.captureForDebug?.cancelCountdown()
             return 0.3

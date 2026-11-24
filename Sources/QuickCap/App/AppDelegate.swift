@@ -37,6 +37,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        WelcomeWindowController.appTerminating = true
+        return .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) { PinWindow.flushState() }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -54,6 +59,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         TextRecognizer.warmUp()
         DebugOptions.apply(to: self)
         welcome.onOpenSettings = { [weak self] in self?.openSettings() }
+        // 欢迎页走完之前截图架不出来（鼠标碰到屏幕边也不出来）
+        welcome.onVisibleChange = { [weak self] showing in self?.shelf.setCaptureHidden(showing) }
         PinWindow.onAnnotate = { [weak self] in self?.annotate($0) }
         // 上次钉着的图放回原处（调试运行不放，免得测试时满屏钉图）
         if !DebugOptions.isDebugRun { PinWindow.restore() }
@@ -68,6 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func makeShelf() {
         shelf = ShelfController(side: settings.side, revealTrigger: settings.revealTrigger, folder: shelfFolder)
         shelf.onActivate = { NSWorkspace.shared.open($0.url) }
+        // 欢迎页开着时换了截图架的设置（比如在设置里换了边）：新的截图架也先藏着
+        if welcome.isShowing { shelf.setCaptureHidden(true) }
         shelf.onEdit = { [weak self] in self?.edit($0) }
         shelf.menuProvider = { [weak self] in self?.menu(for: $0) }
         shelf.onAction = { [weak self] action, item in self?.perform(action, on: item) }
@@ -302,7 +311,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func setTimer(_ sender: NSMenuItem) { settings.captureTimer = sender.tag }
 
-    @objc private func searchCaptures() { shelf.openSearch() }
+    @objc private func searchCaptures() {
+        if welcome.isShowing { welcome.show(); return }
+        shelf.openSearch()
+    }
 
 
     // MARK: 动作
@@ -319,6 +331,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func captureScreen() { openCapture(mode: .screen) }
 
     private func openCapture(mode: CaptureMode?) {
+        // 欢迎页还没走完：先把它走完
+        if welcome.isShowing { welcome.show(); return }
         // 已经开着：同一个快捷键再按一次就关掉；按另一个（⇧⌘1 / ⇧⌘2）就换模式
         if let capture { capture.hotkeyPressed(mode: mode); return }
         let session = CaptureSession(settings: settings, mode: mode)
@@ -345,7 +359,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func deliver(_ c: CapturedImage, _ out: ActionBar.Output, toastAt: CGPoint?) {
         // 钉到桌面：图先浮出来，文件写好后把位置告诉它（右键"在 Finder 里显示"）
         let pin = c.pinned ? PinWindow.pin(image: c.image, hdr: c.hdr, rect: c.screenRect, fileURL: nil) : nil
-        pendingPin = pin
         // 文件：最高质量的 HEIC（有 HDR 内容时带增益图）；写不了 HEIC 就退回 PNG。剪贴板放普通的 PNG，贴到哪里都能用。
         // 编码在后台做（大的 HDR 截图要零点几秒），截好的图飞出去的动画不等它
         let box = EncodeInput(image: c.image, hdr: c.hdr, scale: c.scale, headroom: c.screenHeadroom, copy: out == .saveAndCopy,
@@ -360,7 +373,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let png = box.copy ? CaptureOutput.pngData(p.image, scale: p.scale) : nil
             let thumb = CaptureOutput.thumbnail(p.image, maxPixel: ShelfThumbnails.maxPixel)
             let result = EncodeOutput(file: made?.0, ext: made?.1 ?? "png", png: png, thumbnail: thumb)
-            await MainActor.run { self.finishDelivery(c, out, result, date: date, folder: folder, toastAt: toastAt) }
+            await MainActor.run { self.finishDelivery(c, out, result, pin: pin, date: date, folder: folder, toastAt: toastAt) }
         }
     }
 
@@ -374,12 +387,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 编好了：等飞出去的图停稳，同一刻写文件、挂上截图架（卡片从那张图的位置接着飞），落到绳子上时提示
-    private func finishDelivery(_ c: CapturedImage, _ out: ActionBar.Output, _ r: EncodeOutput, date: Date, folder: URL, toastAt: CGPoint?) {
+    private func finishDelivery(_ c: CapturedImage, _ out: ActionBar.Output, _ r: EncodeOutput, pin: PinWindow?, date: Date, folder: URL, toastAt: CGPoint?) {
         let fallbackToast = toastAt ?? CGPoint(x: c.screenRect.midX, y: c.screenRect.minY - 30)
         // 存不下来（编码失败、文件夹不能写、硬盘满）：图不能丢，至少放进剪贴板
-        let rescue = { [weak self] (reason: String) in
+        let rescue = { (reason: String) in
             c.flight?.cancel()
-            self?.pendingPin = nil
             let png = r.png ?? CaptureOutput.pngData(c.image, scale: c.scale)
             if let png { CaptureOutput.copy(png: png) }
             CaptureToast.show(png != nil ? "\(reason) — copied to clipboard instead" : reason,
@@ -392,7 +404,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let item = ShelfItem.load(url) { ShelfTextIndex.shared.prioritize(item) }
             let message = c.pinned ? (out == .saveAndCopy ? "Pinned, saved and copied" : "Pinned and saved")
                 : out == .saveAndCopy ? "Saved and copied" : "Saved"
-            if c.pinned { self.pendingPin?.fileURL = url; self.pendingPin = nil }
+            // 用这一次自己的钉图：连着钉两张时，前一张写好不会填到后一张上
+            pin?.fileURL = url
             // 写好时可能已经又开了一次截图：那时截图架要继续藏着
             if self.capture == nil { self.shelf.setCaptureHidden(false) }
             if let flight = c.flight {
@@ -439,9 +452,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hand()
         }
     }
-
-    /// 刚钉出来、文件还没写好的那张
-    private var pendingPin: PinWindow?
 
     /// 截图架卡片右键：钉到桌面（屏幕中间，按截图的像素倍数显示）
     private func pinToDesktop(_ item: ShelfItem) {
@@ -629,7 +639,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         shelf.add(fileURL: url, fromScreenPoint: start)
     }
 
-    @objc func toggleShelf() { shelf.toggle() }
+    @objc func toggleShelf() {
+        if welcome.isShowing { welcome.show(); return }
+        shelf.toggle()
+    }
     @objc func openFolder() { NSWorkspace.shared.open(shelfFolder) }
     @objc func openSettings() { settingsWindow.show() }
     var settingsForDebug: SettingsWindowController { settingsWindow }

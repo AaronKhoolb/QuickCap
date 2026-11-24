@@ -179,7 +179,7 @@ final class CaptureSession {
         // 用户框选的这一两秒里，先把文字识别模型加载好（已经加载好的话只要零点几秒）
         TextRecognizer.warmUp()
         // 开关已经打开、只差重新打开的，也先试着截（有时不用重开就能截）；截不了再提示
-        guard ScreenAccess.state == .needsReopen || ScreenAccess.request() else {
+        guard ScreenAccess.state == .needsReopen || ScreenAccess.requestQuietly() else {
             // 第一次：系统自己会弹提示，再叠一个我们的就是两个框
             if !ScreenAccess.takePromptedNow() { showPermissionAlert() }
             finish()
@@ -204,7 +204,8 @@ final class CaptureSession {
             frozen = try await Self.captureAllScreens(pointerOn: pointerScreen, hdr: wantsHDR)
         } catch {
             NSLog("QuickCap capture failed: \(error)")
-            showPermissionAlert()
+            // 只有真的是权限问题才说要权限；显示器拔掉之类的临时失败只响一声
+            if await ScreenAccess.probe() == .on { NSSound.beep() } else { showPermissionAlert() }
             finish()
             return
         }
@@ -1733,6 +1734,8 @@ final class CaptureSession {
         ending = true
         releaseEarlyKeys()
         removeGuards()
+        // 滚动截图中途被关掉（再按一次快捷键、切桌面、锁屏）：全局 Esc、计时器、两个面板也要收掉，不然 Esc 全系统失灵
+        if stitcher != nil { stopScrolling(); stitcher = nil; scrollView = nil }
         liveTimer?.invalidate()
         liveTimer = nil
         let windows = overlays

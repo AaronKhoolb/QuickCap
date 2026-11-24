@@ -9,12 +9,20 @@ final class WelcomeWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var model: WelcomeModel?
     var onOpenSettings: (() -> Void)?
+    /// 欢迎窗口出现、关掉（截图架跟着藏起来、放出来）
+    var onVisibleChange: ((Bool) -> Void)?
 
     static let doneKey = "welcomeDone"
     /// 中途重新打开 QuickCap（打开权限后系统要求的）时，接着上次那一页
     static let pageKey = "welcomePage"
 
     static var shouldShow: Bool { !UserDefaults.standard.bool(forKey: doneKey) }
+
+    /// 欢迎窗口开着：截图、截图架先不能用，按快捷键只把欢迎窗口叫到前面
+    var isShowing: Bool { window != nil }
+
+    /// QuickCap 正在退出（系统的"退出并重新打开"、⌘Q）：窗口跟着关掉不算看完，下次接着上次那一页
+    static var appTerminating = false
 
     func show(page: WelcomeModel.Page? = nil) {
         if let window { window.makeKeyAndOrderFront(nil); NSApp.activate(); return }
@@ -34,6 +42,7 @@ final class WelcomeWindowController: NSObject, NSWindowDelegate {
         w.delegate = self
         w.centerOnMouseScreen()
         window = w
+        onVisibleChange?(true)
         NSApp.activate()
         w.makeKeyAndOrderFront(nil)
     }
@@ -51,10 +60,11 @@ final class WelcomeWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        markDone()
+        if !Self.appTerminating { markDone() }
         model?.stop()
         model = nil
         window = nil
+        onVisibleChange?(false)
     }
 
     /// 调试用
@@ -109,13 +119,17 @@ final class WelcomeModel: ObservableObject {
     func primaryOnAccess() {
         switch access {
         case .on: next()
-        case .needsReopen:
-            if AppSettings.shared.persist { UserDefaults.standard.set(Page.ready.rawValue, forKey: WelcomeWindowController.pageKey) }
-            ScreenAccess.relaunch()
+        case .needsReopen: reopen()
         case .off:
             askedThisTime = true
             if ScreenAccess.request() { refresh() }
         }
+    }
+
+    /// 重新打开后回到权限页：真的生效了会自己翻到下一页，没生效还能看到提示
+    func reopen() {
+        if AppSettings.shared.persist { UserDefaults.standard.set(Page.access.rawValue, forKey: WelcomeWindowController.pageKey) }
+        ScreenAccess.relaunch()
     }
 
     func finish(openSettings: Bool) { onFinish?(openSettings) }
@@ -141,7 +155,13 @@ final class WelcomeModel: ObservableObject {
     }
 
     private func refresh() {
-        let a = ScreenAccess.state
+        Task { [weak self] in
+            let a = await ScreenAccess.probe()
+            self?.apply(a)
+        }
+    }
+
+    private func apply(_ a: ScreenAccess.State) {
         guard a != access else { return }
         withAnimation(.spring(duration: 0.4, bounce: 0.2)) { access = a }
         if a == .on {

@@ -1,4 +1,5 @@
 import AppKit
+import ScreenCaptureKit
 
 /// 屏幕录制权限。
 /// 系统的问法只会出一次：第一次调 CGRequestScreenCaptureAccess 会弹系统的提示，并把 QuickCap 列进系统设置；
@@ -18,8 +19,26 @@ enum ScreenAccess {
 
     static var state: State {
         if let forced { return forced }
-        if CGPreflightScreenCaptureAccess() { return .on }
+        if liveGranted || CGPreflightScreenCaptureAccess() { return .on }
         return canSeeOtherWindowTitles ? .needsReopen : .off
+    }
+
+    /// ScreenCaptureKit 每次都去问系统，开关一打开就能用，不像 CGPreflight 要重新打开才变。
+    /// 问过一次成功就记住（这次运行里不会再变回去）
+    private static var liveGranted = false
+    private static var probing = false
+
+    /// 实时问一下系统现在能不能截。不弹提示；没权限时 SCShareableContent 直接报错
+    static func probe() async -> State {
+        // 系统的提示还没出过时不问：没权限时 ScreenCaptureKit 自己会弹系统提示，要等用户点了按钮再出
+        if forced == nil, asked, !liveGranted, !probing {
+            probing = true
+            defer { probing = false }
+            if (try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)) != nil {
+                liveGranted = true
+            }
+        }
+        return state
     }
 
     /// 系统的提示出过没有（出过之后再请求不会有反应）
@@ -38,6 +57,16 @@ enum ScreenAccess {
         }
         openSystemSettings()
         return false
+    }
+
+    /// 截图时用：有权限返回 true；第一次会弹系统的提示，之后不打开系统设置（由我们的提示框里的按钮去开）
+    static func requestQuietly() -> Bool {
+        promptedNow = false
+        if liveGranted || CGPreflightScreenCaptureAccess() { return true }
+        guard !asked else { return false }
+        UserDefaults.standard.set(true, forKey: askedKey)
+        promptedNow = true
+        return CGRequestScreenCaptureAccess()
     }
 
     /// 刚才那次 request() 弹出了系统自己的提示（这时不要再叠一个我们的提示框）。读一次就清掉

@@ -31,10 +31,12 @@ struct HotKey: Equatable, Codable {
         let code = Int(event.keyCode)
         if !Self.functionKeys.contains(code) {
             // 全局快捷键会把这个组合从所有应用手里拿走：⌘C、⌘V、⌘Q 这种一录上，全系统复制粘贴就失效；
-            // 只有 ⌥（打特殊字符用的）也不行。字母、数字、符号、空格这些键要带 ⌃，或者 ⌘ 再加别的修饰键
+            // 只有 ⌥（打特殊字符用的）也不行。字母、数字、符号、空格这些键要带 ⌃，或者 ⌘ 再加别的修饰键，
+            // 或者 ⌥⇧ 一起（会占掉一个很少用的特殊字符，用户自己要的就给）
             let cmd = m & UInt32(cmdKey) != 0, ctrl = m & UInt32(controlKey) != 0
+            let optShift = m & UInt32(optionKey) != 0 && m & UInt32(shiftKey) != 0
             let others = m & UInt32(shiftKey | optionKey | controlKey)
-            if !ctrl && !(cmd && others != 0) { return nil }
+            if !ctrl && !optShift && !(cmd && others != 0) { return nil }
             // ⇧⌘Z（重做）这种几乎每个应用都在用的也不收
             if m == UInt32(cmdKey | shiftKey), Self.commonShiftCommand.contains(code) { return nil }
         }
@@ -274,6 +276,8 @@ final class HotKeyCenter {
     private var refs: [UInt32: EventHotKeyRef] = [:]
     private var handlers: [UInt32: () -> Void] = [:]
     private var installed = false
+    /// 调试用：现在注册着的快捷键 id
+    var debugIDs: [UInt32] { refs.keys.sorted() }
 
     /// 注册或替换 id 对应的快捷键。返回 false 表示被别的 app 占用了
     @discardableResult

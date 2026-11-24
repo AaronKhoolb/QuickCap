@@ -702,7 +702,7 @@ private struct ShortcutsPane: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(spec.title)
                 if rejected == spec.id {
-                    Text("Use ⌃, or ⌘ with ⇧ or ⌥, so other apps keep their shortcuts")
+                    Text("Use ⌃, ⌥⇧, or ⌘ with ⇧ or ⌥, so other apps keep their shortcuts")
                         .font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 } else if let p = problem(spec) {
                     Text(p).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)

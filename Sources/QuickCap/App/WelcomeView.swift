@@ -89,7 +89,7 @@ struct WelcomeView: View {
             return AnyView(Text("Screen Recording is on. Reopen QuickCap so the change takes effect.")
                 .font(.system(size: 12)).foregroundStyle(.secondary).transition(.opacity))
         case .off where model.askedThisTime:
-            return AnyView(Text("In System Settings, turn on QuickCap. If macOS asks, choose Quit & Reopen.")
+            return AnyView(Text("In System Settings, turn on QuickCap. Already on? Click Reopen QuickCap.")
                 .font(.system(size: 12)).foregroundStyle(.secondary).transition(.opacity))
         case .off:
             return nil
@@ -128,6 +128,10 @@ struct WelcomeView: View {
         case .access:
             if model.access != .on {
                 Button("Not Now") { model.next() }.buttonStyle(.bordered)
+            }
+            // 系统设置里已经打开了，这边却一直测不出来（签名变过之类）：给一个手动重开的出口
+            if model.access == .off && model.askedThisTime {
+                Button("Reopen QuickCap") { model.reopen() }.buttonStyle(.bordered)
             }
         case .ready:
             Button("Settings…") { model.finish(openSettings: true) }.buttonStyle(.bordered)
@@ -190,6 +194,8 @@ extension AnyTransition {
 /// 欢迎页第三页：三个最常用的快捷键，默认都空着，点一下录
 private struct ShortcutsArt: View {
     @ObservedObject var settings: AppSettings
+    /// 刚才按的组合不收（比如 ⌥⇧S）：在名字下面说为什么，不然只有一声提示音
+    @State private var rejected: PartialKeyPath<AppSettings>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -216,10 +222,17 @@ private struct ShortcutsArt: View {
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.system(size: 13, weight: .medium))
-                Text(sub).font(.system(size: 11)).foregroundStyle(.secondary)
+                if rejected == kp {
+                    Text("Use ⌃, ⌥⇧, or ⌘ with ⇧ or ⌥").font(.system(size: 11)).foregroundStyle(.red)
+                } else {
+                    Text(sub).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength: 8)
-            KeyRecorder(key: Binding(get: { settings[keyPath: kp] }, set: { settings[keyPath: kp] = $0 }))
+            KeyRecorder(key: Binding(get: { settings[keyPath: kp] }, set: { settings[keyPath: kp] = $0 }), onReject: {
+                rejected = kp
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { if rejected == kp { rejected = nil } }
+            }, onRecord: { rejected = nil })
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
