@@ -14,6 +14,8 @@ final class ShelfQuickLook: NSObject, QLPreviewPanelDataSource, QLPreviewPanelDe
         panel.dataSource = self
         panel.delegate = self
         panel.reloadData()
+        // 先切到 QuickCap：不然空格、Esc 进了前面那个 app，面板关不掉
+        NSApp.activate()
         panel.makeKeyAndOrderFront(nil)
         // 截图架的窗口层级很高，面板要在它上面才看得见
         panel.level = NSWindow.Level(rawValue: CaptureOverlayWindow.captureLevel.rawValue - 1)

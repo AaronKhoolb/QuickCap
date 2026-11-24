@@ -92,6 +92,8 @@ final class ShelfView: NSView {
 
     // 鼠标交互状态（在 ShelfView+Mouse.swift 里用）
     var hovered: CardNode?
+    /// 鼠标停在卡片上一会儿才在后台转 PNG（扫过去的不转）
+    var prefetchWork: DispatchWorkItem?
     var pressed: CardNode?
     var pressedAction: ShelfAction?
     var pressPoint = CGPoint.zero

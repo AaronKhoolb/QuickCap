@@ -216,10 +216,10 @@ final class SelectionBar: GlassBar {
     private var closeButton: BarButton!
 
     static let modes: [(CaptureMode, String, String, String)] = [
-        (.screen, "rectangle.inset.filled", "Capture Entire Screen", "F"),
+        (.screen, "rectangle.inset.filled", "Capture Screen", "F"),
         (.window, "macwindow", "Capture Window", "W"),
         (.area, "rectangle.dashed", "Capture Area", "A"),
-        (.text, "qrcode.viewfinder", "Scan Text & QR Codes", "S"),
+        (.text, "qrcode.viewfinder", "Scan Text & QR", "S"),
     ]
 
     init(mode: CaptureMode) {
@@ -391,6 +391,7 @@ final class ActionBar: GlassBar {
 
     func setCanUndo(_ on: Bool) {
         undoButton.alphaValue = on ? 1 : 0.35
+        undoButton.isEnabled = on
     }
 
     /// 某个工具按钮在条上的位置（颜色小条对着它出来）
@@ -442,7 +443,8 @@ final class ActionBar: GlassBar {
     func refresh() {
         if kind == .edit {
             primary.setTitle(EditSave.last.title)
-            primary.help(EditSave.last == .replace ? "Save over the original" : "Save a new copy; the original stays", key: "↩")
+            primary.help(EditSave.last == .replace ? "Replace Original" : "Save as New", key: "↩",
+                         sub: EditSave.last == .replace ? "Saves over the original" : "Keeps the original")
             needsLayout = true
             return
         }
@@ -598,10 +600,13 @@ class BarButton: NSView {
                                        owner: self))
     }
 
-    override func mouseEntered(with event: NSEvent) { hovered = true; onHover?(self, true) }
+    /// 灰掉的按钮：没有悬停、提示，点了也没反应
+    var isEnabled = true { didSet { if !isEnabled { hovered = false; pressed = false; onHover?(self, false) } } }
+    override func mouseEntered(with event: NSEvent) { guard isEnabled else { return }; hovered = true; onHover?(self, true) }
     override func mouseExited(with event: NSEvent) { hovered = false; pressed = false; onHover?(self, false) }
-    override func mouseDown(with event: NSEvent) { pressed = true; onHover?(self, false) }
+    override func mouseDown(with event: NSEvent) { guard isEnabled else { return }; pressed = true; onHover?(self, false) }
     override func mouseUp(with event: NSEvent) {
+        guard isEnabled else { return }
         let inside = bounds.contains(convert(event.locationInWindow, from: nil))
         pressed = false
         if inside { onClick?(self) }
@@ -609,7 +614,7 @@ class BarButton: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .button }
     override func isAccessibilityElement() -> Bool { true }
-    override func accessibilityPerformPress() -> Bool { onClick?(self); return true }
+    override func accessibilityPerformPress() -> Bool { guard isEnabled else { return false }; onClick?(self); return true }
 }
 
 /// 橙色主按钮

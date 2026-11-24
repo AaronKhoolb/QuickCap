@@ -664,13 +664,20 @@ final class CardNode {
         let bubble = CALayer()
         bubble.name = "toast"
         bubble.frame = CGRect(x: (size.width - w) / 2, y: bodyTop + (size.height - 24) / 2, width: w, height: 24)
-        bubble.backgroundColor = NSColor(white: 0.1, alpha: 0.82).cgColor
+        // 和截图完成时的提示一样：白底、深色字（以前这里是黑底，同一句 "Saved" 两种样子）
+        bubble.backgroundColor = NSColor(white: 1, alpha: 0.94).cgColor
         bubble.cornerRadius = 12
+        bubble.borderWidth = 0.5
+        bubble.borderColor = NSColor(white: 0, alpha: 0.1).cgColor
+        bubble.shadowColor = NSColor.black.cgColor
+        bubble.shadowOpacity = 0.18
+        bubble.shadowRadius = 6
+        bubble.shadowOffset = CGSize(width: 0, height: -2)
         let t = CATextLayer()
         t.string = text
         t.font = font
         t.fontSize = 12
-        t.foregroundColor = NSColor.white.cgColor
+        t.foregroundColor = NSColor(white: 0, alpha: 0.85).cgColor
         t.alignmentMode = .center
         t.contentsScale = container.contentsScale
         t.frame = CGRect(x: 0, y: 4, width: w, height: 18)

@@ -58,6 +58,6 @@ enum ShelfStore {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(File(pinned: urls.map(\.path))) else { return }
-        try? data.write(to: url, options: .atomic)
+        do { try data.write(to: url, options: .atomic) } catch { NSLog("QuickCap: couldn't save pinned order: \(error)") }
     }
 }

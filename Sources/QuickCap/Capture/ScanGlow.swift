@@ -21,13 +21,8 @@ final class ScanGlow {
     /// iridescent：系统那种彩色流光（Scan）。orange：同一套做法，颜色是 Capture 的橙色，不转、不去饱和，增益低很多
     /// （橙色乘 12 倍，红通道先到顶，会被烧成黄白）
     enum Tint: String { case iridescent, orange, white, cool
-        /// 区域选区那圈光用哪种（defaults write <bundle id> glowStyle orange|white|cool）
-        static var selection: Tint {
-            // --glow-style=orange|white|cool 只给调试用（对比截图），不写进设置
-            let arg = CommandLine.arguments.first { $0.hasPrefix("--glow-style=") }?.dropFirst(13)
-            let v = arg.map(String.init) ?? UserDefaults.standard.string(forKey: "glowStyle") ?? ""
-            return Tint(rawValue: v).flatMap { $0 == .iridescent ? nil : $0 } ?? .cool
-        }
+        /// 区域选区那圈光：冷白（用户 2026-11-25 定的，窗口高亮、吸附线也是冷白）
+        static let selection: Tint = .cool
     }
 
     struct Params {
@@ -47,9 +42,10 @@ final class ScanGlow {
                 saturation = Float(0.3 - 0.1 * k)
                 nestedGain = true
             case .orange, .white, .cool:
-                gain = Float(h > 1 ? 2.4 : 1.5)
-                // 光晕比细线暗得多：三层都用同一个增益叠在一起，橙色会被冲成白色
-                haloGain = gain * 0.45
+                // 单色光（现在用的是冷白）。橙色增益压低：2.4 倍会把橙色冲成发黄的白
+                let k: Float = tint == .orange ? 0.6 : 1
+                gain = Float(h > 1 ? 2.4 : 1.5) * k
+                haloGain = gain * (tint == .orange ? 0.35 : 0.45)
                 saturation = 1
                 nestedGain = false
             }
@@ -93,7 +89,7 @@ final class ScanGlow {
         image.name = "colorImage"
         image.contents = Self.texture(for: tint)
         image.bounds = CGRect(x: 0, y: 0, width: 786, height: 786)
-        if tint == .iridescent {
+        if tint == .iridescent, !ReduceMotion.isOn {
             let spin = CABasicAnimation(keyPath: "transform.rotation.z")
             spin.fromValue = 2 * Double.pi
             spin.toValue = 0
@@ -171,9 +167,11 @@ final class ScanGlow {
     private func buildFallback(_ b: CGRect) {
         let s = CAShapeLayer()
         s.fillColor = nil
-        s.strokeColor = NSColor(white: 1, alpha: 0.95).cgColor
+        // 颜色跟着 tint 走（以前一律白色，选区在没有私有接口的系统上又变回白光）
+        let orange = tint == .orange
+        s.strokeColor = orange ? Motion.orange(1) : tint == .cool ? Motion.cool(1) : NSColor(white: 1, alpha: 0.95).cgColor
         s.lineWidth = p.ringWidth
-        s.shadowColor = NSColor(calibratedRed: 0.85, green: 0.8, blue: 1, alpha: 1).cgColor
+        s.shadowColor = orange ? Motion.orange(1) : NSColor(calibratedRed: 0.85, green: 0.8, blue: 1, alpha: 1).cgColor
         s.shadowOpacity = 0.9
         s.shadowRadius = p.spread
         s.shadowOffset = .zero
@@ -256,7 +254,8 @@ final class ScanGlow {
         if tint == .iridescent { return texture }
         let pair: [CGColor]
         switch tint {
-        case .orange: pair = [CGColor(red: 1, green: 0.46, blue: 0.02, alpha: 1), CGColor(red: 1, green: 0.38, blue: 0, alpha: 1)]
+        case .orange:
+            pair = [CGColor(red: 1, green: 0.44, blue: 0, alpha: 1), CGColor(red: 1, green: 0.374, blue: 0, alpha: 1)]
         case .white: pair = [CGColor(gray: 1, alpha: 1), CGColor(red: 0.95, green: 0.95, blue: 0.97, alpha: 1)]
         case .cool: pair = [CGColor(red: 0.93, green: 0.96, blue: 1, alpha: 1), CGColor(red: 0.74, green: 0.85, blue: 1, alpha: 1)]
         case .iridescent: pair = []

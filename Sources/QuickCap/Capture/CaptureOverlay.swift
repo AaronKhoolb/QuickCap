@@ -50,7 +50,7 @@ final class CaptureOverlayView: NSView {
     /// 自己画的图层都放在这里，保证在选择条和尺寸标签下面
     let canvas = CanvasView()
     private let imageLayer = CALayer()
-    /// 窗口模式的高亮：spotlight 是一圈很粗的半透明黑边（中间留出窗口那块是亮的），ring 是窗口外面一圈橙线。
+    /// 窗口模式的高亮：spotlight 是一圈很粗的半透明黑边（中间留出窗口那块是亮的），ring 是窗口外面一圈冷白线。
     /// 两样都只动位置、大小、圆角、边宽，显卡直接算，不用每一帧重画形状，换窗口时才顺
     private let spotlight = CALayer()
     private let ring = CALayer()
@@ -197,13 +197,13 @@ final class CaptureOverlayView: NSView {
 
         spotlight.borderColor = Self.dimColor.cgColor
         spotlight.borderWidth = Self.spotPad
-        // 橙线：能显示 HDR 的屏幕上一直是 HDR 的（普通白色的 1.6 倍亮），外面一圈 HDR 光晕。
+        // 高亮线：能显示 HDR 的屏幕上一直是 HDR 的（普通白色的 1.6 倍亮），外面一圈 HDR 光晕。
         // 图层开着 wantsExtendedDynamicRangeContent，屏幕会自己打开 HDR 余量来显示
         let hdr = Motion.hdrCapable(screen)
         halo = CaptureHalo(hdr: hdr, bounds: bounds, screen: screen)
         ring.borderWidth = Self.ringWidth
         Motion.allowHDR(ring, hdr)
-        ring.borderColor = hdr ? Motion.orange(1.6) : Motion.orange(1)
+        ring.borderColor = hdr ? Motion.accent(1.6) : Motion.accent(1)
         dim.fillRule = .evenOdd
         // 一打开整个屏幕就暗一点，框好的地方（或者窗口模式下鼠标停着的窗口）是亮的
         dim.fillColor = Self.dimColor.cgColor
@@ -215,6 +215,16 @@ final class CaptureOverlayView: NSView {
         outlineLight.lineWidth = 1
         outlineLight.lineDashPattern = [4, 3]
         guide = GuideGlow(bounds: bounds, screen: screen)
+        // 一打开就先让屏幕把 HDR 余量升上去：系统是看到 HDR 内容才慢慢升（约 0.4 秒），
+        // 以前要等高亮线出来才开始升，刚出来那一下余量不够、颜色被压偏，慢慢才变回原来的颜色。
+        // 放一个看不见的 1pt 小方块（比白亮一点点，压在暗层下面、屏幕角落），截图界面一开余量就开始升
+        if hdr {
+            let warm = CALayer()
+            warm.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+            Motion.allowHDR(warm, true)
+            warm.backgroundColor = CGColor(colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!, components: [1.6, 1.6, 1.6, 1])
+            root.addSublayer(warm)
+        }
         for l in [dim, spotlight] { l.opacity = 0; root.addSublayer(l) }
         root.addSublayer(beautyPreview.layer)
         root.addSublayer(annotator.layer)
@@ -367,7 +377,7 @@ final class CaptureOverlayView: NSView {
             march.toValue = -10
             march.duration = 0.6
             march.repeatCount = .infinity
-            scrollFrame.add(march, forKey: "march")
+            if !ReduceMotion.isOn { scrollFrame.add(march, forKey: "march") }
         } else {
             scrollFrame.removeAnimation(forKey: "march")
             Motion.fade(scrollDim, to: 0, duration: 0.12)
@@ -381,7 +391,7 @@ final class CaptureOverlayView: NSView {
         }
     }
 
-    /// 倒数开始、结束。开始：暗的那层、框、手柄、标签、橙线都淡掉；结束（取消）时回来。
+    /// 倒数开始、结束。开始：暗的那层、框、手柄、标签、高亮线都淡掉；结束（取消）时回来。
     /// restore false：数完了马上要截，不用回来（截图界面跟着淡出）
     func setCounting(_ on: Bool, restore: Bool = true) {
         guard on != counting else { return }
@@ -594,7 +604,7 @@ final class CaptureOverlayView: NSView {
     private var scanHole: (rect: CGRect, corner: CGFloat)?
     private(set) weak var scanBar: ScanResultBar?
 
-    /// 开始扫描：手柄、尺寸标签、虚线框、窗口的橙线收起来，选区边上亮起光
+    /// 开始扫描：手柄、尺寸标签、虚线框、窗口的高亮线收起来，选区边上亮起光
     func beginScan() {
         guard let s = selection, let root = canvas.layer else { return }
         fadeOutBadge()
@@ -618,13 +628,14 @@ final class CaptureOverlayView: NSView {
     }
 
     /// 拖选区、选区定下来以后：选区的边就是那圈光（没有虚线框），跟着手走。
-    /// Scan 是彩色流光，松手接着扫描、光不断；普通截图是橙色，画在选区外面一圈，截下来的区域里干干净净
+    /// Scan 是彩色流光，松手接着扫描、光不断；普通截图是冷白，画在选区外面一圈，截下来的区域里干干净净
     private func followGlow() {
         guard scanHole == nil, let root = canvas.layer else { return }
         let scan = session?.mode == .text
         let tint: ScanGlow.Tint = scan ? .iridescent : ScanGlow.Tint.selection
         guard let s = selection, s.width >= 1, s.height >= 1, scan || kind == .area else {
-            if let g = glow, scanBar == nil, drag == nil { g.hide { g.layer.removeFromSuperlayer() }; glow = nil }
+            // 和窗口的高亮线同样快淡掉
+            if let g = glow, scanBar == nil, drag == nil { g.hide(duration: 0.14) { g.layer.removeFromSuperlayer() }; glow = nil }
             return
         }
         if let g = glow, g.tint != tint { g.layer.removeFromSuperlayer(); glow = nil }
@@ -853,7 +864,7 @@ final class CaptureOverlayView: NSView {
 
     // MARK: 按下去的手感
 
-    /// 按下去时橙线收紧一点、光晕亮一点、标签缩一点；松开弹回来（点中了就带一下回弹）
+    /// 按下去时高亮线收紧一点、光晕亮一点、标签缩一点；松开弹回来（点中了就带一下回弹）
     private var pressed = false
     private static let pressInset: CGFloat = 2.5
 
@@ -1233,7 +1244,7 @@ final class CaptureOverlayView: NSView {
         beautyPreview.update(selection: beautyOn ? selection : nil, corner: beautyCorner, style: beautyStyle, image: frozen,
                              // 只有开了背景、选的是壁纸才去拿（以前拖选区时每一下都去查一次桌面壁纸）
                              wallpaper: beautyOn && beautyStyle.background == .wallpaper ? wallpaper : nil)
-        // 美化时不要选区那圈光、橙线：背景本身就是框
+        // 美化时不要选区那圈光、高亮线：背景本身就是框
         for l in [ring, halo.layer] { l.isHidden = beautyOn }
         glow?.layer.isHidden = beautyOn
         for (h, l) in zip(Handle.allCases, handleLayers) {
@@ -1371,7 +1382,7 @@ final class CaptureOverlayView: NSView {
     /// 现在亮着一个窗口（换窗口时才滑过去；从没有窗口到有窗口是直接在那里淡出来）
     private var holeShown = false
 
-    /// 窗口模式：用 spotlight 和橙线
+    /// 窗口模式：用 spotlight 和高亮线
     private var usesSpotlight: Bool {
         if let _ = selection { return kind == .window }
         return mode == .window
@@ -1385,13 +1396,13 @@ final class CaptureOverlayView: NSView {
         return (r, min(w.corner, r.width / 2, r.height / 2))
     }
 
-    /// 放 spotlight、橙线、光晕到现在亮着的窗口上。glide：从上一个窗口滑过去；否则直接放到位
+    /// 放 spotlight、高亮线、光晕到现在亮着的窗口上。glide：从上一个窗口滑过去；否则直接放到位
     private func layoutSpotlight(glide: Bool) {
         guard let hole = spotHole else { return }
         let r = hole.rect, c = hole.corner
         let pad = Self.spotPad
         Motion.move(spotlight, frame: r.insetBy(dx: -pad, dy: -pad), corner: c + pad, animated: glide)
-        // 橙线贴在窗口外面，不压住窗口的边；贴着屏幕边的那几边收进来，不被屏幕边切掉
+        // 高亮线贴在窗口外面，不压住窗口的边；贴着屏幕边的那几边收进来，不被屏幕边切掉
         let rw = Self.ringWidth
         let rr = r.insetBy(dx: -rw, dy: -rw).intersection(bounds.insetBy(dx: 0.5, dy: 0.5))
         Motion.move(ring, frame: rr.isNull ? r : rr, corner: c > 0 ? c + rw : 0, animated: glide)
@@ -1405,7 +1416,7 @@ final class CaptureOverlayView: NSView {
     static let ringWidth: CGFloat = 2
 
 
-    /// 窗口模式下鼠标停着的窗口：外面变暗，窗口外面描一圈橙线，左上角写名字和尺寸。
+    /// 窗口模式下鼠标停着的窗口：外面变暗，窗口外面描一圈冷白线，左上角写名字和尺寸。
     /// 换窗口时三样用同一条弹簧一起滑过去
     private func setHover(_ w: ScreenWindow?) {
         guard w?.id != hover?.id else { return }

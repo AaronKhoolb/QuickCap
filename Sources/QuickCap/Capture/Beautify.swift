@@ -53,6 +53,8 @@ enum BeautyBackground: Int, CaseIterable {
     @MainActor private static var cache: [URL: CGImage?] = [:]
     /// 每块屏幕上系统壁纸窗口的样子（打开截图时截一次）
     @MainActor private static var live: [CGDirectDisplayID: CGImage] = [:]
+    /// 截图界面关掉：这一刻的壁纸不要了（一块 5K 屏就是几十 MB，以前一直留在内存里）
+    @MainActor static func clearLive() { live = [:] }
 
     /// 截下系统画壁纸的那个窗口（程序坞那个进程的 "Wallpaper"，在所有窗口最下面），不带桌面图标和别的窗口。
     /// 在后台截，不挡打开截图界面；截不到就用壁纸文件

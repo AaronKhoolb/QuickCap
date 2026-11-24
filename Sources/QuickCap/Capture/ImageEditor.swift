@@ -82,6 +82,13 @@ final class ImageEditor {
         view.appear(from: local, corner: sourceCorner)
     }
 
+    /// 又按了截图快捷键：把编辑器叫回前面，键盘还给它
+    func bringToFront() {
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(view)
+    }
+
     /// 收起来。toRect 给了就缩回那里（截图架上的卡片），没给就原地淡掉
     func close(animated: Bool, to toRect: CGRect? = nil, outcome: Outcome = .cancelled) {
         guard ImageEditor.current === self else { return }

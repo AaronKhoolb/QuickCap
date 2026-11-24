@@ -112,6 +112,14 @@ final class PinWindow: NSPanel {
         writeState()
     }
 
+    /// 截图文件夹搬了位置：钉着的图跟着换成新路径（不然重启后找不到文件、钉图就没了）
+    static func remap(_ moved: [(from: URL, to: URL)]) {
+        guard !moved.isEmpty else { return }
+        var map: [String: URL] = [:]
+        for m in moved { map[m.from.standardizedFileURL.path] = m.to }
+        for p in open { if let u = p.fileURL, let to = map[u.standardizedFileURL.path] { p.fileURL = to } }
+    }
+
     /// 稍微等一下再写（拖动、缩放时一秒会改很多次）
     static func saveState() {
         saveWork?.cancel()
@@ -128,7 +136,8 @@ final class PinWindow: NSPanel {
                          baseW: p.baseSize.width, baseH: p.baseSize.height, opacity: p.opacity, locked: p.locked)
         }
         try? FileManager.default.createDirectory(at: supportFolder, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(rows) { try? data.write(to: stateURL, options: .atomic) }
+        do { try JSONEncoder().encode(rows).write(to: stateURL, options: .atomic) }
+        catch { NSLog("QuickCap: couldn't save pins: \(error)") }
     }
 
     // MARK: 从剪贴板钉
@@ -151,7 +160,8 @@ final class PinWindow: NSPanel {
             if (try? png.write(to: f, options: .atomic)) != nil { url = f }
         }
         guard let url, let (img, hdr) = loadImage(url) else { return false }
-        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main ?? NSScreen.screens[0]
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main ?? NSScreen.screens.first
+        else { return false }
         let k = screen.backingScaleFactor
         var size = CGSize(width: CGFloat(img.width) / k, height: CGFloat(img.height) / k)
         let maxS = screen.visibleFrame.insetBy(dx: 60, dy: 60).size
@@ -311,7 +321,7 @@ final class PinWindow: NSPanel {
             closeButton.alphaValue = 0
             // 锁住了就不该再抢键盘：把键盘还给下面的应用
             if isKeyWindow { resignKey() }
-            CaptureToast.show("Locked — unlock from the menu bar", symbol: "lock.fill", at: CGPoint(x: frame.midX, y: frame.minY - 24))
+            CaptureToast.show("Locked. Unlock from the menu bar.", symbol: "lock.fill", at: CGPoint(x: frame.midX, y: frame.minY - 24))
         }
     }
 
@@ -448,7 +458,8 @@ final class PinWindow: NSPanel {
         if f == .command, let c = event.charactersIgnoringModifiers?.lowercased() {
             if c == "w" { closePin(); return }
             if c == "c" { copyImage(); return }
-            if c == "0" { setZoom(1, around: nil); return }
+            // ⌘0、⌘1 都是原大小（钉图本来就是原大小，⌘1 和编辑器一样）
+            if c == "0" || c == "1" { setZoom(1, around: nil); return }
             if c == "=" || c == "+" { setZoom(zoom * 1.25, around: nil); return }
             if c == "-" { setZoom(zoom / 1.25, around: nil); return }
         }

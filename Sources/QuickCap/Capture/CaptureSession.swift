@@ -854,8 +854,8 @@ final class CaptureSession {
         let x = min(max(screenRect.midX - size.width / 2, vis.minX + 8), vis.maxX - size.width - 8)
         bp.place(CGRect(x: x, y: y, width: size.width, height: size.height))
         bp.present()
-        sb.isHidden = false
-        sb.layer?.opacity = 1
+        // 和别的条一样弹出来（以前只是整块淡入）
+        sb.animateIn(anchor: CGPoint(x: 0.5, y: 1), scale: 0.94, offsetY: -8)
         scrollBarPanel = bp
 
         // 预览：一直在右边。选区右边放得下就放在外面，放不下就贴着选区右边放在里面
@@ -1583,7 +1583,11 @@ final class CaptureSession {
                 guard let self else { return }
                 for w in self.overlays where w.overlayView.isLive && w.overlayView.selection == nil {
                     let v = w.overlayView
-                    v.updateWindows(ScreenWindows.list(for: v.screenRef))
+                    let fresh = ScreenWindows.list(for: v.screenRef)
+                    // 窗口都没动（大多数时候）：不重建吸附线、不重新判断鼠标停在哪个窗口
+                    let key = { (ws: [ScreenWindow]) in ws.map { "\($0.id)|\($0.frame)" } }
+                    guard key(fresh) != key(v.windows) else { continue }
+                    v.updateWindows(fresh)
                     self.verifyWindows(on: v)
                 }
             }
@@ -1627,6 +1631,8 @@ final class CaptureSession {
 
     private func showOptions(from button: BarButton) {
         let menu = CaptureOptionsMenu(settings: settings) { [weak self] in
+            // 交给设置窗口：关掉后不要把焦点还给截图前的 app（不然设置窗口被压到后面）
+            self?.handedOff = true
             self?.cancel()
             self?.onOpenSettings?()
         }.build()
@@ -1675,7 +1681,7 @@ final class CaptureSession {
         on(ws, NSWorkspace.screensDidSleepNotification, "screens slept")
         on(ws, NSWorkspace.sessionDidResignActiveNotification, "session locked")
         // 插拔显示器、改分辨率、改缩放才算。屏幕打开或关掉 HDR（亮度余量变了）也会发这个通知，那个不算：
-        // 截图界面的 HDR 橙线一出来，屏幕就会把余量开大
+        // 截图界面的 HDR 高亮线一出来，屏幕就会把余量开大
         let layout = Self.displayLayout()
         on(nc, NSApplication.didChangeScreenParametersNotification, "displays changed", when: { Self.displayLayout() != layout })
         // 别的 app 变成当前 app（⌘Tab、点程序坞、聚焦搜索……）。不一定收得到"失去焦点"：QuickCap 可能本来就没变成当前 app

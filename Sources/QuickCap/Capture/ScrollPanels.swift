@@ -40,12 +40,12 @@ final class ScrollBar: GlassBar {
         a.help("Auto Scroll", key: "A", sub: "Scrolls for you at a steady speed")
         a.onClick = { [weak self] _ in self?.onAuto?() }
         autoButton = a
-        let cancel = BarButton(title: "Cancel", trailingSymbol: nil, padding: 12)
-        cancel.label?.textColor = NSColor(white: 0, alpha: 0.62)
+        // 和倒数条上的 Cancel 一样是灰底的
+        let cancel = CancelPill()
         cancel.help("Cancel", key: "Esc")
         cancel.onClick = { [weak self] _ in self?.onCancel?() }
         let done = PrimaryButton(title: "Done")
-        done.help("Finish and capture", key: "↩")
+        done.help("Finish and Capture", key: "↩")
         done.onClick = { [weak self] _ in self?.onDone?() }
         for v in [left, BarSeparator(), a, BarSeparator(), cancel, done] { stack.addArrangedSubview(v) }
         stack.setCustomSpacing(4, after: cancel)

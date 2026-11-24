@@ -36,12 +36,18 @@ enum ScreenWindows {
     /// 有没有别的进程的窗口盖满了整块屏幕、而且排在截图界面前面。
     /// Mission Control、应用程序窗口、启动台这些系统界面都是这样出现的；不用认它们叫什么
     static func somethingCoversOverlay(_ overlayIDs: Set<CGWindowID>) -> Bool {
-        guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
+        // 只拿排在截图界面上面的窗口（平时是空的；以前每 0.25 秒拷贝一次全部窗口，拖选区时偶尔掉帧）
+        let top = overlayIDs.max() ?? kCGNullWindowID
+        let opts: CGWindowListOption = top == kCGNullWindowID ? [.optionOnScreenOnly] : [.optionOnScreenAboveWindow]
+        guard let info = CGWindowListCopyWindowInfo(opts, top) as? [[String: Any]] else { return false }
         let pid = ProcessInfo.processInfo.processIdentifier
         let screens = NSScreen.screens.map(\.frame.size)
         for w in info {
             // 列表从前往后：碰到截图界面自己的窗口之前出现的，才是"在上面"的
-            if let id = w[kCGWindowNumber as String] as? CGWindowID, overlayIDs.contains(id) { return false }
+            // （只拿上面的窗口时，碰到的是另一块屏幕的截图界面，跳过）
+            if let id = w[kCGWindowNumber as String] as? CGWindowID, overlayIDs.contains(id) {
+                if top == kCGNullWindowID { return false } else { continue }
+            }
             guard (w[kCGWindowOwnerPID as String] as? Int32) != pid,
                   (w[kCGWindowAlpha as String] as? Double ?? 1) > 0.01,
                   let dict = w[kCGWindowBounds as String] as? NSDictionary,
@@ -49,6 +55,17 @@ enum ScreenWindows {
             if screens.contains(where: { g.width >= $0.width - 1 && g.height >= $0.height - 1 }) { return true }
         }
         return false
+    }
+
+    /// 每个进程是不是普通 app（有程序坞图标的）。实时模式下半秒查一次窗口列表，每次都为每个窗口
+    /// 新建一个 NSRunningApplication 要多花一倍时间；进程在运行时这个不会变，记住就好
+    @MainActor private static var regularByPID: [pid_t: Bool] = [:]
+    @MainActor private static func isRegularApp(_ pid: pid_t) -> Bool {
+        if let v = regularByPID[pid] { return v }
+        let v = NSRunningApplication(processIdentifier: pid)?.activationPolicy == .regular
+        if regularByPID.count > 300 { regularByPID = [:] }
+        regularByPID[pid] = v
+        return v
     }
 
     /// 量过的窗口（按窗口编号和范围记着），下次打开截图界面先用这个，后台再量一遍
@@ -78,7 +95,7 @@ enum ScreenWindows {
             guard f.width >= 8, f.height >= 8, f.intersects(bounds) else { continue }
             let title = w[kCGWindowName as String] as? String ?? ""
             let ownerPID = w[kCGWindowOwnerPID as String] as? Int32 ?? 0
-            let regular = NSRunningApplication(processIdentifier: ownerPID)?.activationPolicy == .regular
+            let regular = isRegularApp(ownerPID)
             if let c = cache[id], c.frame == f {
                 out.append(ScreenWindow(id: id, owner: owner, title: title, frame: f, rect: c.rect, corner: c.corner, verified: true,
                                         layer: layer, ownerIsRegularApp: regular))

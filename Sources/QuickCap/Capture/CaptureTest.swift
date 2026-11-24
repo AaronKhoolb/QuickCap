@@ -367,6 +367,8 @@ enum CaptureTest {
         case "countdown-bar":
             write(log, "[countdown-bar \(args.joined(separator: " "))] \(a.captureForDebug?.debugCountdownBar ?? "no session") overlayIgnoresMouse=\(a.captureForDebug?.overlays.first?.ignoresMouseEvents ?? false)\n")
             return 0.05
+        case "access":
+            write(log, "[access] preflight=\(CGPreflightScreenCaptureAccess()) state=\(ScreenAccess.state) asked=\(ScreenAccess.asked) editor=\(ImageEditor.current != nil) session=\(a.captureForDebug != nil) abort=\(a.lastAbortReason ?? "-")\n"); return 0.05
         case "scroll-start":
             a.captureForDebug?.startScrolling(); return 1.0
         case "cancel":
@@ -484,6 +486,14 @@ enum CaptureTest {
             let files = (try? FileManager.default.contentsOfDirectory(atPath: a.shelfFolder.path))?.filter { !$0.hasPrefix(".") }.count ?? -1
             write(log, "[shelf-state \(args.joined(separator: " "))] folder=\(a.shelfFolder.lastPathComponent) files=\(files) cards=\(cards)\n")
             return 0.05
+        case "drag-all":
+            // 截图架里每张都转一次拖出去用的 PNG，看临时文件夹最多留几张
+            let fm = FileManager.default
+            let all = ((try? fm.contentsOfDirectory(at: a.shelfFolder, includingPropertiesForKeys: nil)) ?? []).filter { $0.pathExtension == "heic" }
+            for u in all { _ = ShelfDragWriter.pngFile(for: u) }
+            let dir = fm.temporaryDirectory.appendingPathComponent("QuickCap Drag")
+            write(log, "[drag-all] converted=\(all.count) kept=\((try? fm.contentsOfDirectory(atPath: dir.path))?.count ?? -1)\n")
+            return 0.1
         case "drag-file":
             // 截图架里最新那张拖出去时给的文件是什么
             let fm = FileManager.default
@@ -544,6 +554,21 @@ enum CaptureTest {
         case "log":
             write(log, "[\(args.joined(separator: " "))] " + (a.captureForDebug?.debugState ?? "no session") + "\n")
             return 0.05
+        case "headroom":
+            // 屏幕现在的 HDR 余量（系统打开 HDR 时是慢慢升上去的）
+            let scr = NSScreen.main
+            write(log, "[headroom \(args.first ?? "")] now=\(scr?.maximumExtendedDynamicRangeColorComponentValue ?? -1) potential=\(scr?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? -1)\n")
+            return 0.0
+        case "snap-hdr":
+            // snap-hdr 文件名 x,y,w,h（pt，左下原点）：截一张 HDR 的，并量这块里最亮的颜色
+            let id = (NSScreen.main ?? NSScreen.screens[0]).displayID ?? CGMainDisplayID()
+            let url = URL(fileURLWithPath: "/tmp/" + (args.first ?? "hs-hdr.heic"))
+            let n = args.count > 1 ? args[1].split(separator: ",").compactMap { Double($0) } : []
+            let probe = n.count == 4 ? CGRect(x: n[0], y: n[1], width: n[2], height: n[3]) : nil
+            let name = args.first ?? ""
+            Task.detached { let r = await CaptureDebug.snapshotHDR(display: id, to: url, probe: probe)
+                await MainActor.run { write(log, "[snap-hdr \(name)] \(r)\n") } }
+            return 1.2
         case "snap":
             let id = (NSScreen.main ?? NSScreen.screens[0]).displayID ?? CGMainDisplayID()
             let url = URL(fileURLWithPath: "/tmp/" + (args.first ?? "hs-test.png"))

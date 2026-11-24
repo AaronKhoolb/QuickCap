@@ -73,8 +73,8 @@ final class ShelfController: NSObject, ShelfViewDelegate {
         self.revealTrigger = revealTrigger
         self.folder = folder
         super.init()
-        let screen = NSScreen.main ?? NSScreen.screens[0]
-        build(on: screen)
+        // 开机时还没有屏幕（合着盖子、没接显示器）：等屏幕出来再建
+        if let screen = NSScreen.main ?? NSScreen.screens.first { build(on: screen) }
         // 改分辨率、插拔显示器、菜单栏高度变了：截图架开着时也要跟着换大小、挪把手
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
@@ -99,7 +99,10 @@ final class ShelfController: NSObject, ShelfViewDelegate {
     }
 
     /// 换截图文件夹时：把这个截图架整个关掉（窗口、把手、鼠标监听、计时器），换一个新的
+    private var isShutDown = false
+
     func shutDown() {
+        isShutDown = true
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors = []
         hideTimer?.invalidate()
@@ -109,6 +112,8 @@ final class ShelfController: NSObject, ShelfViewDelegate {
         handle.setArmed(false)
         handle.close()
         window?.orderOut(nil)
+        // 把视图拿下来：它的显示链接在 viewDidMoveToWindow(nil) 里停掉，不然旧截图架带着缩略图一直留在内存
+        window?.contentView = nil
         library = nil
         window = nil
         view = nil
@@ -142,6 +147,7 @@ final class ShelfController: NSObject, ShelfViewDelegate {
     }
 
     @objc private func screensChanged() {
+        if window == nil, !isShutDown, let s = NSScreen.main ?? NSScreen.screens.first { build(on: s); return }
         guard let window, let view else { return }
         let screen = window.screen ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
         guard let screen else { return }
@@ -415,7 +421,7 @@ final class ShelfController: NSObject, ShelfViewDelegate {
         if !window.isVisible { window.orderFrontRegardless() }
         handle.setArmed(false)
         // 在访达里加了、删了图，展开时也对一遍（文件被原地覆盖不一定有通知）
-        library.rescan()
+        library?.rescan()
         view.setShown(true)
     }
 

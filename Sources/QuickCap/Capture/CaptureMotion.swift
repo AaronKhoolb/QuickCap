@@ -68,6 +68,18 @@ enum Motion {
         return CGColor(colorSpace: cs, components: [c[0] * k, c[1] * k, c[2] * k, 1]) ?? base
     }
 
+    /// 冷白：白里带一点蓝（和选区那圈冷白光同一个颜色），k 倍亮
+    static func cool(_ k: CGFloat) -> CGColor {
+        let base = NSColor(calibratedRed: 0.86, green: 0.92, blue: 1, alpha: 1).cgColor
+        guard let cs = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3),
+              let lin = base.converted(to: cs, intent: .defaultIntent, options: nil),
+              let c = lin.components, c.count >= 3 else { return base }
+        return CGColor(colorSpace: cs, components: [c[0] * k, c[1] * k, c[2] * k, 1]) ?? base
+    }
+
+    /// 窗口高亮、吸附线的颜色：冷白（用户 2026-11-25 在屏幕上对比后选了"全部冷白"，和框选统一）
+    static func accent(_ k: CGFloat) -> CGColor { cool(k) }
+
     /// 让图层画出比白色亮的颜色（边框、模糊的光晕）。
     /// 系统说这个开关过时了、改用 preferredDynamicRange，但实测 preferredDynamicRange 对边框颜色不起作用
     /// （只对图片内容有用），所以还用这个；只在这一个地方用
@@ -77,7 +89,7 @@ enum Motion {
     static func hdrCapable(_ screen: NSScreen?) -> Bool { (screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1 }
 }
 
-/// 窗口高亮外面那圈光：和系统 Visual Intelligence 的光边同一套做法（叠加发光），颜色是橙色。
+/// 窗口高亮外面那圈光：和系统 Visual Intelligence 的光边同一套做法（叠加发光），颜色是冷白。
 /// 一圈细线加两层模糊的光，亮度跟着屏幕的 HDR 余量走。所有图层只改位置、大小、圆角，跟着高亮框用同一条弹簧走
 @MainActor
 final class CaptureHalo {
@@ -86,7 +98,7 @@ final class CaptureHalo {
     private let glow: ScanGlow
 
     init(hdr: Bool, bounds: CGRect, screen: NSScreen?) {
-        glow = ScanGlow(bounds: bounds, screen: screen, tint: .orange)
+        glow = ScanGlow(bounds: bounds, screen: screen, tint: .cool)
         layer.frame = bounds
         layer.opacity = 0
         layer.allowsGroupOpacity = false
@@ -99,13 +111,13 @@ final class CaptureHalo {
         glow.move(to: r, corner: c, animated: animated, outside: true, clamp: clamp, duration: 0.26, bounce: 0)
     }
 
-    /// 按下去的手感由橙线收紧来表现，光不再单独变亮
+    /// 按下去的手感由高亮线收紧来表现，光不再单独变亮
     func press(_ on: Bool) {}
 }
 
 
-/// 吸附线：和窗口高亮同一套光（细线加两层模糊的光，叠加混合），颜色是橙色。
-/// 没有私有接口时退回原来的橙线加阴影
+/// 吸附线：和窗口高亮同一套光（细线加两层模糊的光，叠加混合），颜色是冷白。
+/// 没有私有接口时退回一条细线加阴影
 @MainActor
 final class GuideGlow {
     let layer = CALayer()
@@ -117,18 +129,19 @@ final class GuideGlow {
         layer.allowsGroupOpacity = false
         let h = screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1
         Motion.allowHDR(layer, h > 1)
-        let orange = NSColor(calibratedRed: 1, green: 0.5, blue: 0, alpha: 1).cgColor
+        // 和选区、窗口那圈光用同一个橙（光的贴图那个颜色，叠亮以后看起来是 #FF9500）
+        let tone = CGColor(red: 0.86, green: 0.92, blue: 1, alpha: 1)
         func shape(_ width: CGFloat) -> CAShapeLayer {
             let l = CAShapeLayer()
             l.frame = bounds
             l.fillColor = nil
-            l.strokeColor = orange
+            l.strokeColor = tone
             l.lineWidth = width
             return l
         }
         guard ScanGlow.privateAvailable else {
             let l = shape(1)
-            l.shadowColor = orange
+            l.shadowColor = tone
             l.shadowOpacity = 0.7
             l.shadowRadius = 2
             l.shadowOffset = .zero
@@ -136,7 +149,8 @@ final class GuideGlow {
             layer.addSublayer(l)
             return
         }
-        let gain: Float = h > 1 ? 2.4 : 1.5
+        // 细线不冲白，外面的光淡一点
+        let gain: Float = h > 1 ? 1.6 : 1.2
         for (width, g, blur) in [(CGFloat(1), gain, CGFloat(0)), (CGFloat(2), gain * 0.5, CGFloat(1.5)), (CGFloat(4), gain * 0.35, CGFloat(5))] {
             let l = shape(width)
             l.compositingFilter = ScanGlow.filter("plusL")

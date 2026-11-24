@@ -32,7 +32,7 @@ import AppKit
 @MainActor
 enum DebugOptions {
     /// 正式版（release 编译）里调试参数一律不认，不会因为带了参数就换到临时文件夹、不存设置
-    static var isDebugRun: Bool {
+    nonisolated static var isDebugRun: Bool {
         #if DEBUG
         CommandLine.arguments.dropFirst().contains { $0.hasPrefix("--") }
         #else
@@ -570,6 +570,42 @@ import ScreenCaptureKit
 
 /// 调试用：截下整块屏幕，包括 QuickCap 自己的窗口。不在主线程上等，菜单打开时也能截
 enum CaptureDebug {
+    /// 调试用：连截图界面一起截一张 HDR 的（看橙光在 HDR 屏上真的多亮、什么颜色）。
+    /// 存 HEIC（预览里打开是真的 HDR），并记下 probe 那一行像素里最亮的颜色（线性 sRGB，>1 就是比白还亮）
+    static func snapshotHDR(display id: CGDirectDisplayID, to url: URL, probe: CGRect?) async -> String {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard let d = content.displays.first(where: { $0.displayID == id }) else { return "no display" }
+            let cfg = SCScreenshotConfiguration()
+            cfg.width = d.width * 2
+            cfg.height = d.height * 2
+            cfg.showsCursor = false
+            cfg.dynamicRange = .bothSDRAndHDR
+            cfg.displayIntent = .local
+            let out = try await SCScreenshotManager.captureScreenshot(contentFilter: SCContentFilter(display: d, excludingWindows: []), configuration: cfg)
+            guard let img = out.hdrImage else { return "no hdr image" }
+            if let dst = CGImageDestinationCreateWithURL(url as CFURL, "public.heic" as CFString, 1, nil) {
+                CGImageDestinationAddImage(dst, img, [kCGImageDestinationLossyCompressionQuality: 0.95] as CFDictionary)
+                CGImageDestinationFinalize(dst)
+            }
+            guard let probe else { return "saved" }
+            // probe 是屏幕 pt（左下原点）：换成像素（左上原点），在那块里找最亮的
+            let w = img.width, h = img.height, sx = CGFloat(w) / CGFloat(d.width), sy = CGFloat(h) / CGFloat(d.height)
+            let r = CGRect(x: probe.minX * sx, y: CGFloat(h) - probe.maxY * sy, width: probe.width * sx, height: probe.height * sy).integral
+            guard let crop = img.cropping(to: r) else { return "bad probe" }
+            let cw = crop.width, ch = crop.height
+            var buf = [Float](repeating: 0, count: cw * ch * 4)
+            let info = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+            let ctx = CGContext(data: &buf, width: cw, height: ch, bitsPerComponent: 32, bytesPerRow: cw * 16,
+                                space: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!, bitmapInfo: info)!
+            ctx.draw(crop, in: CGRect(x: 0, y: 0, width: cw, height: ch))
+            var best: (Float, Float, Float) = (0, 0, 0)
+            for i in stride(from: 0, to: buf.count, by: 4) where buf[i] > best.0 { best = (buf[i], buf[i+1], buf[i+2]) }
+            let ratio = best.0 > 0 ? best.1 / best.0 : 0
+            return String(format: "peak r=%.2f g=%.2f b=%.2f g/r=%.2f headroom=%.2f", best.0, best.1, best.2, ratio, out.hdrImage.map { $0.contentHeadroom } ?? 0)
+        } catch { return "failed \(error)" }
+    }
+
     static func snapshot(display id: CGDirectDisplayID, to url: URL) async {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)

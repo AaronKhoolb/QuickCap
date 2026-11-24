@@ -15,6 +15,15 @@ echo "→ Version: $VERSION"
 
 bash scripts/bundle.sh release >/dev/null
 
+# Debug symbols embed the build machine's absolute paths (home folder, account email in a
+# cloud-synced path). Strip them so the public binary carries no personal info.
+echo "→ Stripping debug symbols (paths, no personal info)"
+/usr/bin/strip -S -x "$APP/Contents/MacOS/QuickCap" 2>/dev/null
+if /usr/bin/grep -q -a -F -e "/Users/" "$APP/Contents/MacOS/QuickCap"; then
+    echo "✗ Release binary still contains a user path — not shipping it." >&2
+    exit 1
+fi
+
 echo "→ Re-signing with ad-hoc identity (no personal info)"
 find "$APP" -name '._*' -delete 2>/dev/null || true
 /usr/bin/codesign --remove-signature "$APP" 2>/dev/null || true

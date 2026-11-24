@@ -59,12 +59,14 @@ private struct DemoFrame: View {
         ZStack(alignment: .topLeading) {
             Wallpaper()
             DemoWindow().place(L.window)
-            // 截图界面：暗下来的四周、选区的白边、吸附的橙线、Capture 条、闪白
+            // 截图界面：暗下来的四周、选区的冷白光、吸附的冷白线、Capture 条、闪白
             Group {
                 DimHole(hole: sel).fill(Color.black.opacity(0.34), style: FillStyle(eoFill: true))
                 if sel.width > 1 {
-                    Rectangle().strokeBorder(.white, lineWidth: 1).shadow(color: .black.opacity(0.25), radius: 1)
-                        .place(sel.insetBy(dx: -1, dy: -1))
+                    // 和真的选区一样：外面一圈冷白的光
+                    Rectangle().strokeBorder(Color(rgb: 0xEEF4FF), lineWidth: 1.5)
+                        .shadow(color: Color(rgb: 0xBCD8FF).opacity(0.95), radius: 3)
+                        .place(sel.insetBy(dx: -1.5, dy: -1.5))
                 }
             }
             .opacity(dim)
@@ -279,12 +281,12 @@ private struct DimHole: Shape {
     }
 }
 
-/// 吸附时的橙线（带一点光）
+/// 吸附时的冷白线（带一点光，和真的吸附线一样）
 private struct SnapGuide: View {
     let vertical: Bool
     var body: some View {
-        Rectangle().fill(Color(rgb: 0xFF9F0A))
-            .shadow(color: Color(rgb: 0xFF9500).opacity(0.9), radius: 3)
+        Rectangle().fill(Color(rgb: 0xEEF4FF))
+            .shadow(color: Color(rgb: 0xBCD8FF).opacity(0.95), radius: 3)
     }
 }
 

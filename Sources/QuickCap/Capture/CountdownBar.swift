@@ -50,7 +50,7 @@ final class CountdownBar: GlassBar {
 
 /// 灰底的 Cancel（系统计时条上那种），悬停、按下时深一点
 @MainActor
-private final class CancelPill: BarButton {
+final class CancelPill: BarButton {
     init() {
         super.init(title: "Cancel", trailingSymbol: nil, padding: 16)
         label?.textColor = NSColor(white: 0, alpha: 0.62)

@@ -20,6 +20,8 @@ struct WelcomeView: View {
         }
         .padding(.top, 30)
         .frame(width: 560, height: 512)
+        // 按钮、开关和截图界面一样用橙色（不跟系统的强调色走）
+        .tint(Color(rgb: 0xFF9500))
     }
 
     @ViewBuilder
@@ -32,6 +34,11 @@ struct WelcomeView: View {
             layout(art: AnyView(AccessArt(access: model.access, pulsing: model.access == .off)), title: "Allow Screen Recording",
                    body: "macOS asks for this before any app can capture the screen. QuickCap only looks at the screen when you take a capture, and nothing leaves your Mac.",
                    status: accessStatus)
+        case .accessibility:
+            layout(art: AnyView(AccessArt(access: model.axTrusted ? .on : .off, pulsing: !model.axTrusted, pane: .accessibility)),
+                   title: "Allow Accessibility",
+                   body: "Lets QuickCap scroll for you in a scrolling capture and snap to buttons and text fields. QuickCap never reads what you type.",
+                   status: axStatus)
         case .shortcuts:
             layout(art: AnyView(ShortcutsArt(settings: settings)), title: "Choose Your Shortcuts",
                    body: "Optional. Every capture also starts from the QuickCap menu in the menu bar, and you can change these anytime in Settings.")
@@ -96,6 +103,18 @@ struct WelcomeView: View {
         }
     }
 
+    private var axStatus: AnyView? {
+        if model.axTrusted {
+            return AnyView(Label("Accessibility is on", systemImage: "checkmark.circle.fill")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.green)
+                .transition(.opacity.combined(with: .scale(scale: 0.9))))
+        }
+        guard model.askedThisTime else { return nil }
+        return AnyView(Text("In System Settings, turn on QuickCap. This page moves on by itself.")
+            .font(.system(size: 12)).foregroundStyle(.secondary).transition(.opacity))
+    }
+
     // MARK: 底部
 
     private var bottomBar: some View {
@@ -126,13 +145,12 @@ struct WelcomeView: View {
                 Button("Skip") { model.next() }.buttonStyle(.bordered)
             }
         case .access:
-            if model.access != .on {
-                Button("Not Now") { model.next() }.buttonStyle(.bordered)
-            }
             // 系统设置里已经打开了，这边却一直测不出来（签名变过之类）：给一个手动重开的出口
             if model.access == .off && model.askedThisTime {
                 Button("Reopen QuickCap") { model.reopen() }.buttonStyle(.bordered)
             }
+        case .accessibility:
+            EmptyView()
         case .ready:
             Button("Settings…") { model.finish(openSettings: true) }.buttonStyle(.bordered)
         }
@@ -147,6 +165,7 @@ struct WelcomeView: View {
             case .needsReopen: return "Reopen QuickCap"
             case .on: return "Continue"
             }
+        case .accessibility: return model.axTrusted ? "Continue" : "Open System Settings"
         case .ready: return "Done"
         }
     }
@@ -155,6 +174,7 @@ struct WelcomeView: View {
         switch model.page {
         case .hello, .shortcuts: model.next()
         case .access: model.primaryOnAccess()
+        case .accessibility: model.primaryOnAccessibility()
         case .ready: model.finish(openSettings: false)
         }
     }
@@ -199,11 +219,11 @@ private struct ShortcutsArt: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            row("plus.viewfinder", "All-In-One", "Area, window or screen", \.captureKey, hero: true)
+            row("plus.viewfinder", "All-In-One", "Area, window or screen", \.captureKey, .capture, hero: true)
             Divider().padding(.leading, 50)
-            row("text.viewfinder", "Scan Text & QR", "Copy text or open a link", \.captureTextKey)
+            row("text.viewfinder", "Scan Text & QR", "Copy text or open a link", \.captureTextKey, .captureText)
             Divider().padding(.leading, 50)
-            row("rectangle.stack", "Show or Hide Shelf", "Your recent captures", \.toggleShelfKey)
+            row("rectangle.stack", "Show or Hide Shelf", "Your recent captures", \.toggleShelfKey, .toggleShelf)
         }
         .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
@@ -214,7 +234,7 @@ private struct ShortcutsArt: View {
     }
 
     private func row(_ symbol: String, _ title: String, _ sub: String,
-                     _ kp: ReferenceWritableKeyPath<AppSettings, HotKey?>, hero: Bool = false) -> some View {
+                     _ kp: ReferenceWritableKeyPath<AppSettings, HotKey?>, _ id: AppSettings.HotKeyID, hero: Bool = false) -> some View {
         HStack(spacing: 12) {
             Image(systemName: symbol)
                 .font(.system(size: 16))
@@ -224,6 +244,8 @@ private struct ShortcutsArt: View {
                 Text(title).font(.system(size: 13, weight: .medium))
                 if rejected == kp {
                     Text("Use ⌃, ⌥⇧, or ⌘ with ⇧ or ⌥").font(.system(size: 11)).foregroundStyle(.red)
+                } else if let p = problem(kp, id) {
+                    Text(p).font(.system(size: 11)).foregroundStyle(.red)
                 } else {
                     Text(sub).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
@@ -236,5 +258,16 @@ private struct ShortcutsArt: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
+    }
+
+    /// 录上了但用不了：和系统的重复、和另一行重复、注册不上（和设置页同样的说法）
+    private func problem(_ kp: ReferenceWritableKeyPath<AppSettings, HotKey?>, _ id: AppSettings.HotKeyID) -> String? {
+        guard let k = settings[keyPath: kp] else { return nil }
+        if settings.reservedKeys.contains(id) { return "macOS already uses this shortcut" }
+        let all: [ReferenceWritableKeyPath<AppSettings, HotKey?>] = [\.captureKey, \.captureTextKey, \.toggleShelfKey,
+                                                                     \.captureAreaKey, \.captureWindowKey, \.captureScreenKey]
+        if all.contains(where: { $0 != kp && settings[keyPath: $0] == k }) { return "Already used by another shortcut" }
+        if settings.conflictingKeys.contains(id) { return "Couldn’t turn on this shortcut. Try another one." }
+        return nil
     }
 }

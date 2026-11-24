@@ -3,8 +3,10 @@ import SwiftUI
 /// 权限页的图：系统设置"屏幕与系统录音"那一页的样子，QuickCap 那一行的开关跟着真实状态变。
 /// 用户在系统设置里要找的就是这一行
 struct AccessArt: View {
+    enum Pane { case screen, accessibility }
     let access: ScreenAccess.State
     let pulsing: Bool
+    var pane: Pane = .screen
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -65,10 +67,11 @@ struct AccessArt: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
-                Text("Screen & System Audio Recording").font(.system(size: 12.5, weight: .bold))
+                Text(pane == .screen ? "Screen & System Audio Recording" : "Accessibility").font(.system(size: 12.5, weight: .bold))
             }
             .padding(.top, 12)
-            Text("Allow the applications below to record the content of your screen and audio.")
+            Text(pane == .screen ? "Allow the applications below to record the content of your screen and audio."
+                 : "Allow the applications below to control your computer.")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 14)

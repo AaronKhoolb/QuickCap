@@ -33,7 +33,14 @@ extension ShelfView: NSDraggingSource {
             hit?.hoverTarget = 1
             hovered = hit
             // 鼠标停上来就在后台把 HEIC 转好 PNG：真拖出去时不用在主线程上现转（大图要零点几秒，抓起那一下会卡）
-            if let hit { ShelfDragWriter.prefetch(hit.item.url) }
+            // 停 0.35 秒才转：鼠标扫过一排卡片时不会每张都整张解码一遍
+            prefetchWork?.cancel()
+            if let hit {
+                let url = hit.item.url
+                let w = DispatchWorkItem { ShelfDragWriter.prefetch(url) }
+                prefetchWork = w
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: w)
+            }
             wake()
         }
         if let hit, let last = lastHoverPoint {
@@ -244,6 +251,7 @@ extension ShelfView: NSDraggingSource {
     }
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        if let url = draggingCard?.item.url { ShelfDragWriter.dragEnded(url) }
         if let card = draggingCard {
             if operation.isEmpty {
                 // 没放下去：系统已经把图滑回卡片上了，卡片马上恢复，
@@ -292,18 +300,48 @@ final class ShelfDragWriter: NSObject, NSPasteboardWriting {
     /// 按"原文件的路径 + 修改时间"分文件夹放：改过的图、不同文件夹里同名的图不会拖出去旧的那张
     static func pngFile(for url: URL) -> URL? {
         guard url.pathExtension.lowercased() != "png" else { return nil }
+        let dir = folder(for: url)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dst = dir.appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".png")
+        if FileManager.default.fileExists(atPath: dst.path) { remember(dir); return dst }
+        guard let data = pngData(of: url), (try? data.write(to: dst, options: .atomic)) != nil else { return nil }
+        remember(dir)
+        return dst
+    }
+
+    /// 这张图转好的 PNG 放在哪个文件夹（只算路径，不建）
+    private static func folder(for url: URL) -> URL {
         let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)?
             .timeIntervalSinceReferenceDate ?? 0
         // 固定的哈希（FNV-1a）：系统的 Hasher 每次启动种子都不一样，重开以后就找不到上次转好的了
         var h: UInt64 = 0xcbf29ce484222325
         for b in "\(url.standardizedFileURL.path)|\(modified)".utf8 { h = (h ^ UInt64(b)) &* 0x100000001b3 }
         let key = String(h, radix: 36)
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("QuickCap Drag/\(key)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let dst = dir.appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".png")
-        if FileManager.default.fileExists(atPath: dst.path) { return dst }
-        guard let data = pngData(of: url), (try? data.write(to: dst, options: .atomic)) != nil else { return nil }
-        return dst
+        return FileManager.default.temporaryDirectory.appendingPathComponent("QuickCap Drag/\(key)", isDirectory: true)
+    }
+
+    /// 转好的 PNG 最多留几张（最近停过、拖过的），再多就删最旧的：临时文件夹不会越堆越大
+    private static let keepCount = 3
+    private static let keepLock = NSLock()
+    nonisolated(unsafe) private static var kept: [URL] = []
+    private static func remember(_ dir: URL) {
+        keepLock.lock()
+        kept.removeAll { $0 == dir }
+        kept.append(dir)
+        let old = kept.count > keepCount ? Array(kept.prefix(kept.count - keepCount)) : []
+        kept.removeFirst(old.count)
+        keepLock.unlock()
+        for d in old { try? FileManager.default.removeItem(at: d) }
+    }
+
+    /// 拖完了：过两分钟删掉这张转好的（收的 app 放下后还要读一会儿文件，马上删会读不到）
+    static func dragEnded(_ url: URL) {
+        guard url.pathExtension.lowercased() != "png" else { return }
+        let dir = folder(for: url)
+        DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 120) {
+            keepLock.lock(); kept.removeAll { $0 == dir }; keepLock.unlock()
+            try? FileManager.default.removeItem(at: dir)
+        }
     }
 
     /// 提前在后台转好（鼠标停在卡片上时）。排成一队一张张转、同一张不重复排：
@@ -311,6 +349,12 @@ final class ShelfDragWriter: NSObject, NSPasteboardWriting {
     private static let prefetchQueue = DispatchQueue(label: "QuickCap.dragPNG", qos: .utility)
     private static let pendingLock = NSLock()
     nonisolated(unsafe) private static var pending: Set<URL> = []
+    /// 上次运行留下的拖出去用的 PNG（启动时清掉，不然临时文件夹一直变大）
+    static func clearCache() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("QuickCap Drag", isDirectory: true)
+        DispatchQueue.global(qos: .background).async { try? FileManager.default.removeItem(at: dir) }
+    }
+
     static func prefetch(_ url: URL) {
         guard url.pathExtension.lowercased() != "png" else { return }
         pendingLock.lock()

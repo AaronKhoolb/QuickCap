@@ -1,6 +1,7 @@
 import AppKit
 import ScreenCaptureKit
 import Combine
+import ServiceManagement
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -13,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let welcome = WelcomeWindowController()
     /// 悬挂架显示哪个文件夹的截图（调试时可以换成测试文件夹）
     lazy var shelfFolder = CaptureStore.folder
+    /// 设置里正在把截图搬到新文件夹
+    private var movingFolder = false
     private var subscriptions: Set<AnyCancellable> = []
     private var sampleIndex = 0
     private let settings = AppSettings.shared
@@ -42,7 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return .terminateNow
     }
 
-    func applicationWillTerminate(_ notification: Notification) { PinWindow.flushState() }
+    func applicationWillTerminate(_ notification: Notification) {
+        PinWindow.flushState()
+        ShelfTextIndex.shared.flush()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if handOffToRunningInstance() { return }
@@ -57,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         buildStatusItem()
         observeSettings()
         TextRecognizer.warmUp()
+        ShelfDragWriter.clearCache()
         DebugOptions.apply(to: self)
         welcome.onOpenSettings = { [weak self] in self?.openSettings() }
         // 欢迎页走完之前截图架不出来（鼠标碰到屏幕边也不出来）
@@ -65,7 +72,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 上次钉着的图放回原处（调试运行不放，免得测试时满屏钉图）
         if !DebugOptions.isDebugRun { PinWindow.restore() }
         // 第一次打开（或者上次看到一半、为了权限重新打开了）
-        if !DebugOptions.isDebugRun, WelcomeWindowController.shouldShow { welcome.show() }
+        // 欢迎页看过了但权限没了（新版本系统要重新给、用户自己关掉）：只放权限那几页
+        if !DebugOptions.isDebugRun {
+            if WelcomeWindowController.shouldShow { welcome.show() }
+            else if WelcomeWindowController.missingPermissions { welcome.showPermissions() }
+        }
+        // 第一次打开：默认开机启动（只设一次，之后用户在设置里关掉就不再动）
+        if !DebugOptions.isDebugRun, !UserDefaults.standard.bool(forKey: "loginItemDefaulted") {
+            UserDefaults.standard.set(true, forKey: "loginItemDefaulted")
+            if SMAppService.mainApp.status != .enabled { try? SMAppService.mainApp.register() }
+        }
     }
 
     /// 调试用：打开欢迎窗口的某一页
@@ -97,16 +113,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 搬完：置顶、认过的字换成新路径，切到新文件夹，截图架重建。done 拿到没搬成的张数
     func moveScreenshots(_ files: [URL], to new: URL, folder value: String, done: @escaping (Int) -> Void) {
         shelf.shutDown()
+        movingFolder = true
         DispatchQueue.global(qos: .userInitiated).async {
             let r = FolderMigration.move(files, to: new)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     ShelfStore.remapPinned(r.moved)
                     ShelfTextIndex.shared.remap(r.moved)
+                    PinWindow.remap(r.moved)
                     self.settings.screenshotFolder = value
                     // 直接重建（上面的订阅随后看到文件夹已经对上，不会再建一次）
                     if DebugOptions.debugShelfFolder == nil { self.shelfFolder = CaptureStore.folder }
                     self.makeShelf()
+                    self.movingFolder = false
                     done(r.failed)
                 }
             }
@@ -256,9 +275,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func pinFromClipboard() { if !PinWindow.pinFromClipboard() { NSSound.beep() } }
 
+    /// 剪贴板里有没有图：菜单打开时查一次。validateMenuItem 在鼠标移动时会被反复调用，每次都读剪贴板会让菜单卡
+    private var clipboardHasImage = false
+
     /// 菜单会自动启用有 action 的项：这里决定"Pin from Clipboard"灰不灰
     @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem === pinClipboardItem { return PinWindow.clipboardHasImage }
+        if menuItem === pinClipboardItem { return clipboardHasImage }
         return true
     }
 
@@ -303,6 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        if menu === statusItem.menu { clipboardHasImage = PinWindow.clipboardHasImage }
         toggleItem.title = shelf.isShown ? "Hide Shelf" : "Show Shelf"
         for i in timerMenu?.items ?? [] { i.state = i.tag == settings.captureTimer ? .on : .off }
         unlockPinsItem?.isHidden = !PinWindow.anyLocked
@@ -312,7 +335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func setTimer(_ sender: NSMenuItem) { settings.captureTimer = sender.tag }
 
     @objc private func searchCaptures() {
-        if welcome.isShowing { welcome.show(); return }
+        if welcome.blocksApp() { return }
         shelf.openSearch()
     }
 
@@ -332,7 +355,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func openCapture(mode: CaptureMode?) {
         // 欢迎页还没走完：先把它走完
-        if welcome.isShowing { welcome.show(); return }
+        if welcome.blocksApp() { return }
+        // 权限没了：回到欢迎页的权限那几页，不在截图时一个个弹
+        if !DebugOptions.isDebugRun, WelcomeWindowController.missingPermissions { welcome.showPermissions(); return }
+        // 正在编辑一张截图：先把编辑器叫回前面（截图界面会抢走键盘，编辑完 Esc、⌘Z 都没反应）
+        if let editor = ImageEditor.current { editor.bringToFront(); NSSound.beep(); return }
+        // 正在搬截图文件夹：截了也不知道该放哪边，等搬完
+        if movingFolder {
+            CaptureToast.show("Moving your screenshots. Try again in a moment.", symbol: "hourglass",
+                              at: CGPoint(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y - 40), hold: 2)
+            return
+        }
         // 已经开着：同一个快捷键再按一次就关掉；按另一个（⇧⌘1 / ⇧⌘2）就换模式
         if let capture { capture.hotkeyPressed(mode: mode); return }
         let session = CaptureSession(settings: settings, mode: mode)
@@ -345,6 +378,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.lastAbortReason = session?.abortReason
             self?.capture = nil
             self?.shelf.setCaptureHidden(false)
+            BeautyBackground.clearLive()
         }
         capture = session
         shelf.setCaptureHidden(true)
@@ -394,7 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             c.flight?.cancel()
             let png = r.png ?? CaptureOutput.pngData(c.image, scale: c.scale)
             if let png { CaptureOutput.copy(png: png) }
-            CaptureToast.show(png != nil ? "\(reason) — copied to clipboard instead" : reason,
+            CaptureToast.show(png != nil ? "\(reason). Copied to clipboard instead." : reason,
                               symbol: "exclamationmark.circle.fill", at: fallbackToast, hold: 3)
         }
         guard let file = r.file else { rescue("Couldn’t encode the screenshot"); return }
@@ -458,7 +492,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let src = CGImageSourceCreateWithURL(item.url as CFURL, nil),
               let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { NSSound.beep(); return }
         let hdr = CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR] as CFDictionary)
-        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main ?? NSScreen.screens[0]
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main ?? NSScreen.screens.first
+        else { NSSound.beep(); return }
         let k = screen.backingScaleFactor
         var size = CGSize(width: CGFloat(img.width) / k, height: CGFloat(img.height) / k)
         let maxS = screen.visibleFrame.insetBy(dx: 60, dy: 60).size
@@ -543,7 +578,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let hdr = gm ? CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR] as CFDictionary) : nil
         let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
         let typeID = CGImageSourceGetType(src) as String?
-        let screen = pin.screen ?? NSScreen.main ?? NSScreen.screens[0]
+        guard let screen = pin.screen ?? NSScreen.main ?? NSScreen.screens.first else { NSSound.beep(); return }
         let dpi = (props?[kCGImagePropertyDPIWidth] as? NSNumber).map { CGFloat(truncating: $0) } ?? 0
         let scale = dpi >= 72 ? dpi / 72 : screen.backingScaleFactor
         let headroom = max(1, CGFloat(hdr?.contentHeadroom ?? 1))
@@ -634,17 +669,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func hangSample() {
         guard let url = SampleImage.write(index: sampleIndex) else { return }
         sampleIndex += 1
-        let screen = NSScreen.main ?? NSScreen.screens[0]
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         let start = NSPoint(x: screen.frame.midX + CGFloat.random(in: -300...300), y: screen.frame.midY)
         shelf.add(fileURL: url, fromScreenPoint: start)
     }
 
     @objc func toggleShelf() {
-        if welcome.isShowing { welcome.show(); return }
+        if welcome.blocksApp() { return }
         shelf.toggle()
     }
     @objc func openFolder() { NSWorkspace.shared.open(shelfFolder) }
-    @objc func openSettings() { settingsWindow.show() }
+    @objc func openSettings() {
+        // 欢迎页浮在最上面：开设置时让开，不然设置窗口被挡在下面
+        welcome.yield()
+        settingsWindow.show()
+    }
     var settingsForDebug: SettingsWindowController { settingsWindow }
     var statusItemForDebug: NSStatusItem? { statusItem }
 
@@ -670,17 +709,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             edit(item)
         case .copy:
             // 只放图片数据：同时放文件的话，有的应用会贴成附件或路径，各家不一样
-            guard let png = ShelfDragWriter.pngData(of: item.url) else {
-                shelf.toast("Couldn’t copy", for: item)
-                return
+            // HEIC 转 PNG 放到后台（大图要零点几秒，以前在主线程，按 ⌘C 截图架会顿一下）
+            let url = item.url
+            Task { [weak self] in
+                let png = await Task.detached(priority: .userInitiated) { ShelfDragWriter.pngData(of: url) }.value
+                guard let self else { return }
+                guard let png else { self.shelf.toast("Couldn’t copy", for: item); return }
+                CaptureOutput.copy(png: png)
+                self.shelf.toast("Image copied", for: item)
             }
-            let pbItem = NSPasteboardItem()
-            pbItem.setData(png, forType: .png)
-            if let tiff = NSBitmapImageRep(data: png)?.tiffRepresentation { pbItem.setData(tiff, forType: .tiff) }
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.writeObjects([pbItem])
-            shelf.toast("Image copied", for: item)
         case .recognizeText:
             recognize(item)
         case .revealInFinder:

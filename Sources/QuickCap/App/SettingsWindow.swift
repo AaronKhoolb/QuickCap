@@ -265,7 +265,7 @@ private enum KeyRecording {
 /// 一页：左边一列标签（右对齐），右边控件。每页一样宽，左边那列一样宽，换页时控件不跳
 private enum Look {
     /// QuickCap 的橙色（勾选框、录快捷键时的边）
-    static let accent = Color(nsColor: NSColor(calibratedRed: 1, green: 0.54, blue: 0, alpha: 1))
+    static let accent = Color(nsColor: NSColor(calibratedRed: 1, green: 0.58, blue: 0, alpha: 1))
     /// 左边标签那一列的宽度
     static let labelWidth: CGFloat = 112
 }
@@ -473,6 +473,8 @@ private struct CapturePane: View {
                 Check("Hide desktop icons while capturing", isOn: $settings.hideDesktopIcons)
             }
         }
+        // 去系统设置给了辅助功能权限、回到这里：红字该消失就消失
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in axTick += 1 }
     }
 
     private static let folders: [(name: String, path: String)] = [

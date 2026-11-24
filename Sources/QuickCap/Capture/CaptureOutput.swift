@@ -331,12 +331,22 @@ enum CaptureOutput {
     }
 
     /// 只放图片数据：同时放文件的话，有的应用会贴成附件或路径
+    /// TIFF 只在别的 app 真要时才转（以前每次复制都在主线程编一份几十 MB 的 TIFF，复制时卡一下）
     static func copy(png: Data) {
         let item = NSPasteboardItem()
         item.setData(png, forType: .png)
-        if let tiff = NSBitmapImageRep(data: png)?.tiffRepresentation { item.setData(tiff, forType: .tiff) }
+        item.setDataProvider(LazyTIFF(png: png), forTypes: [.tiff])
         pasteboard.clearContents()
         pasteboard.writeObjects([item])
+    }
+}
+
+/// 剪贴板上的 TIFF：被要的时候才从 PNG 转
+final class LazyTIFF: NSObject, NSPasteboardItemDataProvider {
+    private let png: Data
+    init(png: Data) { self.png = png }
+    func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
+        if type == .tiff, let tiff = NSBitmapImageRep(data: png)?.tiffRepresentation { item.setData(tiff, forType: .tiff) }
     }
 }
 
