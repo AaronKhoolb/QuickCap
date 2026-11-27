@@ -369,6 +369,21 @@ enum CaptureTest {
             return 0.05
         case "access":
             write(log, "[access] preflight=\(CGPreflightScreenCaptureAccess()) state=\(ScreenAccess.state) asked=\(ScreenAccess.asked) editor=\(ImageEditor.current != nil) session=\(a.captureForDebug != nil) abort=\(a.lastAbortReason ?? "-")\n"); return 0.05
+        case "warp":
+            // warp x,y：把真的鼠标指针挪到这里（主屏坐标，原点左下）。自动滚动从指针所在的那一栏开始滚
+            if let p = point(args.first) {
+                let h = CGDisplayBounds(CGMainDisplayID()).height
+                CGWarpMouseCursorPosition(CGPoint(x: p.x, y: h - p.y))
+                CGAssociateMouseAndMouseCursorPosition(1)
+            }
+            return 0.2
+        case "scroll-wait":
+            // scroll-wait [秒]：等自动滚动停下（到底了、滚完所有栏），最多等这么久
+            let limit = Double(args.first ?? "") ?? 90
+            if a.captureForDebug?.debugAutoRunning == true, waited < limit { waited += 0.2; repeatLine = true; return 0.2 }
+            write(log, "[scroll-wait \(String(format: "%.1f", waited))s] \(a.captureForDebug?.debugScroll ?? "no session")\n[auto-trace] \(a.captureForDebug?.debugAutoTrace ?? "-")\n")
+            waited = 0
+            return 0.05
         case "scroll-start":
             a.captureForDebug?.startScrolling(); return 1.0
         case "cancel":

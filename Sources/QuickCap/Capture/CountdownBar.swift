@@ -108,6 +108,7 @@ final class CountdownPanel: NSPanel {
         let vis = screen.visibleFrame.insetBy(dx: 8 - m, dy: 8 - m)
         f.origin.x = min(max(f.minX, vis.minX), vis.maxX - f.width)
         f.origin.y = min(max(f.minY, vis.minY), vis.maxY - f.height)
+        dismissToken += 1
         setFrame(f, display: true)
         orderFrontRegardless()
         // 从右边（原来 Capture 按钮的位置）稍微放大出来
@@ -116,6 +117,12 @@ final class CountdownPanel: NSPanel {
 
     func dismiss(animated: Bool) {
         bar.animateOut(duration: animated ? 0.12 : 0, offsetY: 0)
-        DispatchQueue.main.asyncAfter(deadline: .now() + (animated ? 0.13 : 0)) { [weak self] in self?.orderOut(nil) }
+        // 收起途中又开了一次倒数：这次的 orderOut 不能把新的藏掉
+        let token = dismissToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + (animated ? 0.13 : 0)) { [weak self] in
+            guard let self, self.dismissToken == token else { return }
+            self.orderOut(nil)
+        }
     }
+    private var dismissToken = 0
 }

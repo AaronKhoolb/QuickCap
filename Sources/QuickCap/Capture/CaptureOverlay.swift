@@ -335,7 +335,8 @@ final class CaptureOverlayView: NSView {
 
     private(set) var scrolling = false
     private let scrollDim = CAShapeLayer()
-    private let scrollFrame = CAShapeLayer()
+    /// 滚动截图时选区外面那圈冷白光
+    private var scrollGlow: ScanGlow?
 
     /// 开始、结束滚动截图：截图界面变成实时、点得穿；选区外面暗、选区一圈白色虚线；别的都收起来
     func setScrolling(_ on: Bool) {
@@ -357,31 +358,21 @@ final class CaptureOverlayView: NSView {
             scrollDim.path = p
             scrollDim.fillRule = .evenOdd
             scrollDim.fillColor = Self.dimColor.cgColor
-            scrollFrame.path = CGPath(rect: s.insetBy(dx: -1, dy: -1), transform: nil)
-            scrollFrame.fillColor = nil
-            scrollFrame.strokeColor = NSColor.white.cgColor
-            scrollFrame.lineWidth = 1.5
-            scrollFrame.lineDashPattern = [6, 4]
-            scrollFrame.shadowColor = NSColor.black.cgColor
-            scrollFrame.shadowOpacity = 0.5
-            scrollFrame.shadowRadius = 1
-            scrollFrame.shadowOffset = .zero
-            if scrollDim.superlayer == nil { canvas.layer?.addSublayer(scrollDim); canvas.layer?.addSublayer(scrollFrame) }
-            scrollDim.opacity = 0; scrollFrame.opacity = 0
+            if scrollDim.superlayer == nil { canvas.layer?.addSublayer(scrollDim) }
+            scrollDim.opacity = 0
             CATransaction.commit()
             Motion.fade(scrollDim, to: 1, duration: 0.16)
-            Motion.fade(scrollFrame, to: 1, duration: 0.16)
-            // 虚线慢慢走（像在录）
-            let march = CABasicAnimation(keyPath: "lineDashPhase")
-            march.fromValue = 0
-            march.toValue = -10
-            march.duration = 0.6
-            march.repeatCount = .infinity
-            if !ReduceMotion.isOn { scrollFrame.add(march, forKey: "march") }
+            // 框是和选区同一圈 HDR 冷白光（画在选区外面，滚动截图只截选区里面，光不会被截进去）
+            if let root = canvas.layer {
+                let g = scrollGlow ?? ScanGlow(bounds: bounds, screen: window?.screen, tint: ScanGlow.Tint.selection)
+                if g.layer.superlayer == nil { root.addSublayer(g.layer) }
+                g.move(to: s, corner: 0, animated: false, outside: true, clamp: bounds)
+                g.show(duration: 0.16)
+                scrollGlow = g
+            }
         } else {
-            scrollFrame.removeAnimation(forKey: "march")
             Motion.fade(scrollDim, to: 0, duration: 0.12)
-            Motion.fade(scrollFrame, to: 0, duration: 0.12)
+            if let g = scrollGlow { scrollGlow = nil; g.hide(duration: 0.12) { g.layer.removeFromSuperlayer() } }
             // 回到框好的样子：暗的那层、光、标签、手柄、画的东西都回来（和开始时收起来的反过来）
             Motion.fade(annotator.layer, to: 1, duration: 0.16)
             if let l = badge.layer { Motion.fade(l, to: 1, duration: 0.16) }
@@ -406,9 +397,14 @@ final class CaptureOverlayView: NSView {
             CATransaction.commit()
             loupe.isHidden = true
         } else if restore {
-            if let l = badge.layer { Motion.fade(l, to: 1, duration: 0.14) }
-            updateLayers()
+            restoreAfterCounting()
         }
+    }
+
+    /// 倒数完没恢复（等着截这一刻），可是没截到：把框、暗层、角标拿回来
+    func restoreAfterCounting() {
+        if let l = badge.layer { Motion.fade(l, to: 1, duration: 0.14) }
+        updateLayers()
     }
 
     /// 这块屏幕这次有没有 HDR 的那张（设置开了 HDR、屏幕能显示 HDR、截到了）。和系统截图一样：有就用 HDR 截
@@ -665,6 +661,8 @@ final class CaptureOverlayView: NSView {
 
     /// 扫描结束，光淡掉、结果条收起。restore：回到平常的样子（选区的暗层、手柄、虚线框）
     func endScan(restore: Bool, keepGlow: Bool = false) {
+        scanNote?.removeFromSuperview()
+        scanNote = nil
         if let b = scanBar {
             b.animateOut(duration: 0.12, offsetY: 0)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { b.removeFromSuperview() }
@@ -700,6 +698,28 @@ final class CaptureOverlayView: NSView {
         let x = min(max(code.midX - size.width / 2, 8), bounds.width - size.width - 8)
         b.frame = CGRect(x: x.rounded(), y: y.rounded(), width: size.width, height: size.height)
         b.animateIn(below: below)
+        showScanNote(b.note, bar: b.frame, below: below)
+    }
+
+    /// 结果条旁边的一行小字（白字带阴影，在暗层上看得清）：在码下面就放条下面，否则放条上面
+    private var scanNote: NSTextField?
+    private func showScanNote(_ text: String?, bar f: CGRect, below: Bool) {
+        scanNote?.removeFromSuperview()
+        scanNote = nil
+        guard let text else { return }
+        let l = NSTextField(labelWithString: text)
+        l.font = .systemFont(ofSize: 11.5, weight: .medium)
+        l.textColor = NSColor(white: 1, alpha: 0.92)
+        l.wantsLayer = true
+        l.shadow = { let s = NSShadow(); s.shadowColor = NSColor(white: 0, alpha: 0.7); s.shadowBlurRadius = 3; s.shadowOffset = .zero; return s }()
+        let size = l.fittingSize
+        let x = min(max(f.midX - size.width / 2, 8), bounds.width - size.width - 8)
+        let y = below ? f.minY - 6 - size.height : f.maxY + 6
+        l.frame = CGRect(x: x.rounded(), y: y.rounded(), width: size.width, height: size.height)
+        addSubview(l)
+        scanNote = l
+        l.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { c in c.duration = 0.18; l.animator().alphaValue = 1 }
     }
 
     /// 现在亮着的那块（选区，窗口的话带窗口的圆角）

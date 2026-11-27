@@ -15,6 +15,8 @@ extension ShelfView: NSDraggingSource {
     func updateHover(at layerPoint: CGPoint) -> Bool {
         if hoverLocked { return hovered != nil }
         if reorderingCard != nil { return true }
+        // 正在拖出去：经过别的卡片不悬停、不提前转图（转图会把刚拖出去那张的 PNG 挤掉）
+        if draggingCard != nil { return hovered != nil }
         // 撤销条：鼠标在上面时要能点，卡片悬停先放下
         let onUndo = undoPill.contains(layerPoint)
         undoPill.setHot(onUndo)
@@ -293,7 +295,9 @@ final class ShelfDragWriter: NSObject, NSPasteboardWriting {
 
     init(url: URL) {
         self.url = url
-        outURL = Self.pngFile(for: url) ?? url
+        // 和后台提前转的排在同一条队列上：后台正在转这张时等它转完直接用，不在主线程上再解码一遍
+        outURL = Self.prefetchQueue.sync { Self.pngFile(for: url) } ?? url
+        if outURL != url { Self.markInUse(outURL.deletingLastPathComponent(), true) }
     }
 
     /// HEIC 之类的转成同名 PNG，放在临时文件夹。本来就是 PNG 或者转不了就用原文件。
@@ -324,12 +328,18 @@ final class ShelfDragWriter: NSObject, NSPasteboardWriting {
     private static let keepCount = 3
     private static let keepLock = NSLock()
     nonisolated(unsafe) private static var kept: [URL] = []
+    nonisolated(unsafe) private static var inUse: Set<URL> = []
+    private static func markInUse(_ dir: URL, _ on: Bool) {
+        keepLock.lock(); if on { inUse.insert(dir) } else { inUse.remove(dir) }; keepLock.unlock()
+    }
     private static func remember(_ dir: URL) {
         keepLock.lock()
         kept.removeAll { $0 == dir }
         kept.append(dir)
-        let old = kept.count > keepCount ? Array(kept.prefix(kept.count - keepCount)) : []
-        kept.removeFirst(old.count)
+        // 正在拖、刚拖出去的那几张不删（收的 app 放下后才来读文件）
+        let candidates = kept.filter { !inUse.contains($0) }
+        let old = kept.count > keepCount ? Array(candidates.prefix(kept.count - keepCount)) : []
+        kept.removeAll { old.contains($0) }
         keepLock.unlock()
         for d in old { try? FileManager.default.removeItem(at: d) }
     }
@@ -339,7 +349,7 @@ final class ShelfDragWriter: NSObject, NSPasteboardWriting {
         guard url.pathExtension.lowercased() != "png" else { return }
         let dir = folder(for: url)
         DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 120) {
-            keepLock.lock(); kept.removeAll { $0 == dir }; keepLock.unlock()
+            keepLock.lock(); kept.removeAll { $0 == dir }; inUse.remove(dir); keepLock.unlock()
             try? FileManager.default.removeItem(at: dir)
         }
     }

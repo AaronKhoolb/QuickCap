@@ -15,6 +15,8 @@ struct CapturedImage {
     var flight: CaptureFlight?
     /// 钉到桌面：存好、挂上截图架之外，在原地出一张浮着的图
     var pinned = false
+    /// 截的是什么（写进文件的"截图"标记）：selection / window / display
+    var captureType = "selection"
 }
 
 /// 把截图变成文件、放进剪贴板、另存一份
@@ -180,6 +182,19 @@ enum CaptureOutput {
         return CGImageDestinationFinalize(dst) ? data as Data : nil
     }
 
+    /// 标成"截图"：和系统截图、CleanShot 一样写这几个扩展属性。访达"按种类分组"时才会放进 Screenshots 那一堆
+    /// （HEIC 文件本身按里面的位深、有没有透明分成好几种"HEIF 图像"，不标的话桌面上会分出好几堆 Images）
+    /// rect：截的那块在屏幕上的位置（pt，原点在主屏左上），type：selection / window / display
+    nonisolated static func markAsScreenshot(_ url: URL, rect: CGRect?, type: String) {
+        func set(_ name: String, _ value: Any) {
+            guard let d = try? PropertyListSerialization.data(fromPropertyList: value, format: .binary, options: 0) else { return }
+            _ = d.withUnsafeBytes { setxattr(url.path, "com.apple.metadata:" + name, $0.baseAddress, d.count, 0, 0) }
+        }
+        set("kMDItemIsScreenCapture", true)
+        set("kMDItemScreenCaptureType", type)
+        if let r = rect { set("kMDItemScreenCaptureGlobalRect", [r.minX, r.minY, r.width, r.height].map { Int($0.rounded()) }) }
+    }
+
     /// 改好的图换掉原来的文件：原来那份先挪到临时文件夹（撤销用），新的写进去，创建时间改回原来的。返回原来那份在哪
     nonisolated static func replaceKeepingDates(_ url: URL, with data: Data) -> URL? {
         let fm = FileManager.default
@@ -195,7 +210,24 @@ enum CaptureOutput {
             return nil
         }
         if let created { try? fm.setAttributes([.creationDate: created], ofItemAtPath: url.path) }
+        // 原子写入换了一个新文件，"截图"的标记跟着丢了：原来有就补回去
+        if isScreenshot(backup) { copyScreenshotMarks(from: backup, to: url) }
         return backup
+    }
+
+    nonisolated static func isScreenshot(_ url: URL) -> Bool {
+        getxattr(url.path, "com.apple.metadata:kMDItemIsScreenCapture", nil, 0, 0, 0) > 0
+    }
+
+    nonisolated static func copyScreenshotMarks(from a: URL, to b: URL) {
+        for n in ["kMDItemIsScreenCapture", "kMDItemScreenCaptureType", "kMDItemScreenCaptureGlobalRect"] {
+            let name = "com.apple.metadata:" + n
+            let len = getxattr(a.path, name, nil, 0, 0, 0)
+            guard len > 0 else { continue }
+            var buf = [UInt8](repeating: 0, count: len)
+            guard getxattr(a.path, name, &buf, len, 0, 0) == len else { continue }
+            _ = setxattr(b.path, name, buf, len, 0, 0)
+        }
     }
 
     /// 撤销：原来那份搬回去

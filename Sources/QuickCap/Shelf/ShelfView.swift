@@ -204,7 +204,8 @@ final class ShelfView: NSView {
         undoPill?.setContentsScale(s)
         // 换到倍数不一样的屏幕（1x ↔ 2x）：已经建好的卡片缩略图、图标都是按旧倍数画的，重建一遍才清楚
         if changed {
-            for c in cards where c.phase == .hanging && !isBusy(c) { replaceCard(c.item, thumbnail: nil) }
+            // 用 entries 里最新的那份：卡片身上的可能是旧的（文件改过、卡片还没换），写回去会盖掉新数据
+            for c in cards where c.phase == .hanging && !isBusy(c) { replaceCard(index(of: c.item.url).map { entries[$0] } ?? c.item, thumbnail: nil) }
         }
     }
 
@@ -727,8 +728,8 @@ final class ShelfView: NSView {
                 c.hang = rope.point(at: c.x)
                 c.resetSwing()
             }
+            // 看得见的卡片（正在补位、刚换完顺序）从当前位置接着滑，不瞬移；缩回去的上面已经放好了
             for c in cards where c.phase != .flying {
-                c.slide.value = c.slide.target
                 let rank = edgeRank(c, visible: visible)
                 let delay = rank < visible ? CGFloat(visible - 1 - rank) * Metrics.revealStagger : 0
                 c.reveal.show(after: delay)

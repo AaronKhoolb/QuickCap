@@ -41,6 +41,7 @@ final class ShelfTextIndex {
         let dirs = Set(items.map { $0.url.deletingLastPathComponent().standardizedFileURL })
         if dirs != Set(scopes) { scopes = Array(dirs); lastSystemQuery = nil }
         for k in entries.keys where alive[k] == nil { drop(k) }
+        evicted = evicted.filter { alive[$0.key] != nil }
         recent = recent.filter { alive[$0] != nil }
     }
 
@@ -64,6 +65,15 @@ final class ShelfTextIndex {
     // MARK: 认字（只认需要的那几张）
 
     private var running = Set<String>()
+    /// 最多两张同时认（每张都整图解码，一次全丢出去会占满所有核）
+    nonisolated private static let workQueue: OperationQueue = {
+        let q = OperationQueue()
+        q.maxConcurrentOperationCount = 2
+        q.qualityOfService = .userInitiated
+        return q
+    }()
+    /// 认过、因为内存放不下被挤掉的（路径 → 修改时间）：搜索时不再重认，不然命中多于上限时认一张挤一张、永远认不完
+    private var evicted: [String: Double] = [:]
     /// 还有几张在认（搜索条上显示"还在找"）
     var pending: Int { running.count + (systemQuery?.isGathering == true ? 1 : 0) }
 
@@ -71,7 +81,7 @@ final class ShelfTextIndex {
         let key = url.standardizedFileURL.path
         guard entries[key]?.modified != modified, !running.contains(key) else { return }
         running.insert(key)
-        DispatchQueue.global(qos: .userInitiated).async {
+        Self.workQueue.addOperation {
             let lines = Self.recognizeLines(url)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -96,6 +106,7 @@ final class ShelfTextIndex {
     }
 
     private func drop(_ k: String) {
+        if let m = entries[k]?.modified { evicted[k] = m }
         entries.removeValue(forKey: k)
         order.removeAll { $0 == k }
     }
@@ -198,7 +209,7 @@ final class ShelfTextIndex {
         }
         // 系统说对上了：先算对上，后台认一下这张好框出位置
         guard systemHits.contains(key) else { return nil }
-        if entries[key] == nil, let m = alive[key] { recognize(url, modified: m) }
+        if entries[key] == nil, let m = alive[key], evicted[key] != m { recognize(url, modified: m) }
         return []
     }
 

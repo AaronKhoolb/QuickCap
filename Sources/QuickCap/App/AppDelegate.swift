@@ -79,8 +79,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // 第一次打开：默认开机启动（只设一次，之后用户在设置里关掉就不再动）
         if !DebugOptions.isDebugRun, !UserDefaults.standard.bool(forKey: "loginItemDefaulted") {
-            UserDefaults.standard.set(true, forKey: "loginItemDefaulted")
-            if SMAppService.mainApp.status != .enabled { try? SMAppService.mainApp.register() }
+            // 从 DMG、下载文件夹直接打开时（系统挪到随机路径运行）先不注册，挪进“应用程序”后再来
+            let inApps = Bundle.main.bundlePath.hasPrefix("/Applications/")
+                || Bundle.main.bundlePath.hasPrefix(NSHomeDirectory() + "/Applications/")
+            if inApps {
+                // 注册成功（或本来就开着）才记下，失败下次启动再试
+                if SMAppService.mainApp.status == .enabled || (try? SMAppService.mainApp.register()) != nil
+                    || SMAppService.mainApp.status == .requiresApproval {
+                    UserDefaults.standard.set(true, forKey: "loginItemDefaulted")
+                }
+            }
         }
     }
 
@@ -468,9 +476,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard self != nil else { return }
             let url = CaptureOutput.newURL(in: folder, date: date, ext: r.ext)
             CaptureOutput.reserved.insert(url.path)
+            let top = NSScreen.screens.first?.frame.maxY ?? c.screenRect.maxY
+            let globalRect = CGRect(x: c.screenRect.minX, y: top - c.screenRect.maxY, width: c.screenRect.width, height: c.screenRect.height)
+            let captureType = c.captureType
             let data = file
             DispatchQueue.global(qos: .userInitiated).async {
                 let ok = (try? data.write(to: url, options: .atomic)) != nil
+                // 标成截图：访达"按种类分组"时和系统截图、CleanShot 放在同一堆 Screenshots
+                // （位置记成主屏左上原点的 pt，和系统截图一样）
+                if ok { CaptureOutput.markAsScreenshot(url, rect: globalRect, type: captureType) }
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         CaptureOutput.reserved.remove(url.path)

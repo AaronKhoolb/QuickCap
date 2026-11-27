@@ -23,6 +23,8 @@ enum UIElementEdges {
         let root = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(root, 0.05)
         guard let win: AXUIElement = attribute(root, kAXFocusedWindowAttribute) ?? attribute(root, kAXMainWindowAttribute) else { return [] }
+        // 超时只管设过的那个元素：窗口和子元素也要设，不然前台 app 卡住时每问一次等好几秒
+        AXUIElementSetMessagingTimeout(win, 0.05)
         let deadline = Date().addingTimeInterval(budget)
         var out: [CGRect] = []
         var stack: [(AXUIElement, Int)] = [(win, 0)]
@@ -31,7 +33,7 @@ enum UIElementEdges {
             seen += 1
             if let r = frame(el), r.width >= 8, r.height >= 8 { out.append(r) }
             guard depth < maxDepth, let kids: [AXUIElement] = attribute(el, kAXChildrenAttribute) else { continue }
-            for k in kids.reversed() { stack.append((k, depth + 1)) }
+            for k in kids.reversed() { AXUIElementSetMessagingTimeout(k, 0.05); stack.append((k, depth + 1)) }
         }
         return out
     }

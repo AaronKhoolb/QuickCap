@@ -56,8 +56,8 @@ shadow. Ready for a slide, a tweet or a README.
 
 | | |
 |:---|:---|
-| **Scan text & QR codes** | Select any area and the text or link is copied. Uses Apple Vision, entirely on your Mac. |
-| **Scrolling capture** | Scroll the content yourself and QuickCap stitches it as you go. |
+| **Scan text & QR codes** | Select any area and the text is copied, or act on the code: open links, join Wi‑Fi, add contacts and events, join Zoom, Meet or Teams meetings. Two-factor setup codes show the current 6-digit code, ready to paste. Uses Apple Vision, entirely on your Mac. |
+| **Scrolling capture** | Scroll yourself, or press **A** and QuickCap scrolls for you, finds the column that moves, and stitches it as you go. |
 | **Pin to Desktop** | Float a capture above every window. Zoom, fade it to any opacity, or lock it so clicks pass through. Pins come back after a restart, and you can pin whatever image is on the clipboard or mark one up in place. |
 | **Window captures** | Keep the real macOS shadow (hold ⌥ to leave it out), on a transparent background or your desktop wallpaper, dynamic ones included. |
 | **HDR** | On HDR displays, captures keep their HDR brightness (HEIC with a gain map). |

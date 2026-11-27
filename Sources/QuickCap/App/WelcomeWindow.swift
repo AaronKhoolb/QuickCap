@@ -186,7 +186,7 @@ final class WelcomeModel: ObservableObject {
             NSWorkspace.shared.open(url)
         }
     }
-    private static let axAskedKey = "accessibilityAsked"
+    private static let axAskedKey = "accessibilityAsked-" + ScreenAccess.versionTag
 
     /// 重新打开后回到权限页：真的生效了会自己翻到下一页，没生效还能看到提示
     func reopen() {

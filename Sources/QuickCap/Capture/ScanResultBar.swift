@@ -13,6 +13,19 @@ final class ScanResultBar: GlassBar {
     var onPrimary: (() -> Void)?
     var onCopy: ((String) -> Void)?
     var onNext: (() -> Void)?
+    /// 验证码：存进系统"密码" app
+    var onSetUp: (() -> Void)?
+    /// 条下面的一行提醒（验证码：这张图里有密钥）
+    var note: String? {
+        if case .oneTimeCode = code.kind { return "This QR contains a secret key. Don’t share this screenshot." }
+        return nil
+    }
+    /// 验证码：每秒刷新数字和倒计时
+    private var otpTimer: Timer?
+    private var otpLabel: NSTextField?
+    private var otpRing: CAShapeLayer?
+    /// 放进过窗口了（之后窗口藏起来、条被拿走就停计时器）
+    private var otpShown = false
 
     let code: ScannedCode
     private var primary: PrimaryButton!
@@ -46,6 +59,14 @@ final class ScanResultBar: GlassBar {
             stack.addArrangedSubview(next)
             stack.setCustomSpacing(4, after: next)
         }
+        // 验证码：旁边一个小按钮交给系统"密码" app 存起来（以后自动填）
+        if case .oneTimeCode(let a) = code.kind, let u = a.setupURL, NSWorkspace.shared.urlForApplication(toOpen: u) != nil {
+            let setup = BarButton(title: "Set Up", trailingSymbol: nil, padding: 9)
+            setup.help("Save to Passwords", key: nil)
+            setup.onClick = { [weak self] _ in self?.onSetUp?() }
+            stack.addArrangedSubview(setup)
+            stack.setCustomSpacing(4, after: setup)
+        }
         let p = PrimaryButton(title: code.action ?? "Copy")
         p.help(code.action == nil ? "Copy" : primaryHelp, key: "↩")
         p.onClick = { [weak self] _ in self?.onPrimary?() }
@@ -70,6 +91,7 @@ final class ScanResultBar: GlassBar {
         switch code.kind {
         case .link(let u): return linkView(u)
         case .wifi(let ssid, let pw, _): return wifiView(ssid.isEmpty ? "Wi‑Fi Network" : ssid, pw)
+        case .oneTimeCode(let a): return otpView(a)
         default: return twoLine(code.title, code.caption)
         }
     }
@@ -147,6 +169,77 @@ final class ScanResultBar: GlassBar {
         b.onClick = { [weak self] btn in self?.copy(over: btn) }
         copyTarget = b
         return b
+    }
+
+    /// 验证码：大号数字（123 456）+ 倒计时小圆圈，下面灰字是账号；再下面一行提醒这张图里有密钥。点数字复制
+    private func otpView(_ a: OTPAccount) -> NSView {
+        let digits = NSTextField(labelWithString: OTPAccount.spaced(a.code()))
+        digits.font = .monospacedDigitSystemFont(ofSize: 17, weight: .semibold)
+        digits.textColor = Self.ink
+        otpLabel = digits
+        var top: [NSView] = [digits]
+        if a.counter == nil {
+            let ring = NSView()
+            ring.wantsLayer = true
+            ring.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([ring.widthAnchor.constraint(equalToConstant: 14), ring.heightAnchor.constraint(equalToConstant: 14)])
+            let track = CAShapeLayer(), arc = CAShapeLayer()
+            let path = CGPath(ellipseIn: CGRect(x: 1.5, y: 1.5, width: 11, height: 11), transform: nil)
+            for (l, c) in [(track, NSColor(white: 0, alpha: 0.1)), (arc, NSColor(white: 0, alpha: 0.55))] {
+                l.path = path; l.fillColor = nil; l.strokeColor = c.cgColor; l.lineWidth = 2
+                l.frame = CGRect(x: 0, y: 0, width: 14, height: 14)
+                ring.layer?.addSublayer(l)
+            }
+            // 从 12 点开始、顺时针变短
+            arc.transform = CATransform3DConcat(CATransform3DMakeRotation(.pi / 2, 0, 0, 1), CATransform3DMakeScale(-1, 1, 1))
+            arc.lineCap = .round
+            otpRing = arc
+            top.append(ring)
+        }
+        let row = NSStackView(views: top)
+        row.spacing = 7
+        row.alignment = .centerY
+        let who = Self.label(a.label, size: 11.5, weight: .regular, color: Self.gray)
+        who.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let col = NSStackView(views: [row, who])
+        col.orientation = .vertical
+        col.alignment = .leading
+        col.spacing = 0
+        let b = BarButton(content: col, height: 40, padding: NSEdgeInsets(top: 0, left: 6, bottom: 0, right: 6))
+        b.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
+        b.help("Copy Code", key: "⌘C")
+        b.onClick = { [weak self] btn in self?.copy(over: btn) }
+        copyTarget = b
+        tickOTP()
+        otpTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                // 截图界面关掉时窗口只是藏起来，条还在：看不见了就停
+                guard let self else { t.invalidate(); return }
+                if let w = self.window { self.otpShown = true; if !w.isVisible { t.invalidate(); return } }
+                else if self.otpShown { t.invalidate(); return }
+                self.tickOTP()
+            }
+        }
+        return b
+    }
+
+    private func tickOTP() {
+        guard case .oneTimeCode(let a) = code.kind else { return }
+        let now = Date()
+        let text = OTPAccount.spaced(a.code(at: now))
+        if otpLabel?.stringValue != text { otpLabel?.stringValue = text }
+        if let ring = otpRing, let left = a.secondsLeft(at: now) {
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            ring.strokeEnd = CGFloat(left / Double(a.period))
+            // 最后 5 秒变红：快换了，别复制这个
+            ring.strokeColor = (left <= 5 ? NSColor.systemRed : NSColor(white: 0, alpha: 0.55)).cgColor
+            CATransaction.commit()
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { otpTimer?.invalidate(); otpTimer = nil }
     }
 
     // MARK: 点了

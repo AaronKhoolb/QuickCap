@@ -102,6 +102,8 @@ final class ShelfController: NSObject, ShelfViewDelegate {
     private var isShutDown = false
 
     func shutDown() {
+        // 搜索条是单独的窗口：先关掉，不然留在屏幕上、按钮指着已经关掉的这个截图架
+        closeSearch()
         isShutDown = true
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors = []
@@ -417,6 +419,8 @@ final class ShelfController: NSObject, ShelfViewDelegate {
         guard let view, let window else { return }
         shownByHover = byHover
         lastInteraction = Date()
+        // 为换边收起到一半又展开：换边不能丢，直接在新的那边展开
+        if let side = pendingSide { view.side = side; placeHandle() }
         pendingSide = nil
         if !window.isVisible { window.orderFrontRegardless() }
         handle.setArmed(false)
@@ -727,6 +731,8 @@ final class ShelfController: NSObject, ShelfViewDelegate {
         ShelfStore.savePinned(view.pinnedURLs)
         handle.setCount(view.count)
         updateHandleCards()
+        // 搜索开着时增删、置顶、换顺序：对上的那几张的位置也跟着变
+        if searchBar != nil { refreshSearch(jump: false) }
         onItemsChanged?()
     }
 }

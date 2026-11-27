@@ -43,7 +43,9 @@ enum ScreenAccess {
 
     /// 系统的提示出过没有（出过之后再请求不会有反应）
     static var asked: Bool { UserDefaults.standard.bool(forKey: askedKey) }
-    private static let askedKey = "screenAccessAsked"
+    /// 按版本记：新版本签名不同，系统当成另一个 app，要重新由系统提示一次（把新版加进列表）
+    static let versionTag = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "0"
+    private static let askedKey = "screenAccessAsked-" + versionTag
 
     /// 请求权限：第一次弹系统的提示；之后直接打开系统设置的那一页。返回现在能不能截
     @discardableResult

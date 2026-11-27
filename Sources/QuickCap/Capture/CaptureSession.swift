@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import ScreenCaptureKit
 
 /// 一次截图：先把每块屏幕截成静态图（冻结），再在每块屏幕上盖一个覆盖窗口。
@@ -327,7 +328,7 @@ final class CaptureSession {
         ab.onRun = { [weak self] in self?.perform($0) }
         ab.onResize = { [weak self] in self?.activeOverlay?.layoutActionBar() }
         ab.onTool = { [weak self] t in self?.selectTool(t) }
-        ab.onUndo = { [weak self] in self?.activeOverlay?.annotator.undo() }
+        ab.onUndo = { [weak self] in self?.activeOverlay?.commitText(); self?.activeOverlay?.annotator.undo() }
         ab.onPin = { [weak self] in self.map { $0.perform($0.settings.captureCopy ? .saveAndCopy : .save, pin: true) } }
         ab.onBeauty = { [weak self] in self?.toggleBeauty() }
         ab.onScroll = { [weak self] in self?.startScrolling() }
@@ -554,8 +555,10 @@ final class CaptureSession {
         snapshotToken += 1
         let token = snapshotToken, rect = view.selection
         Task { @MainActor in
-            guard let shot = await Self.snapshot(screen, pointer: pointer, hdr: hdr), !self.ending,
-                  view.selection != nil, token == self.snapshotToken, view.selection == rect, !view.isDragging else { return }
+            let shot = await Self.snapshot(screen, pointer: pointer, hdr: hdr)
+            guard !self.ending, view.selection != nil, token == self.snapshotToken, view.selection == rect, !view.isDragging else { return }
+            // 截不到（屏幕刚断开、系统拒绝）：响一声、把操作条拿回来，不然只剩一个空的截图界面
+            guard let shot else { NSSound.beep(); view.restoreAfterCounting(); self.showActionBar(on: view); return }
             view.setSnapshot(shot.image, output: shot.withPointer, hdr: shot.hdr, outputHDR: shot.withPointerHDR)
             view.setLive(false)
             if let then { then() } else { self.afterSnapshot(on: view) }
@@ -692,7 +695,7 @@ final class CaptureSession {
         // 冻结之后才在 Options 里打开"显示指针"：没有带指针的那张，把冻结那一刻的指针画上去
         if pointer, !usePointer, !v.isLive {
             source = compositeCursor(onto: source, in: v) ?? source
-            sourceHDR = sourceHDR.flatMap { compositeCursor(onto: $0, in: v) }
+            sourceHDR = sourceHDR.map { compositeCursor(onto: $0, in: v) ?? $0 }
         }
         let size = v.bounds.size
         let annotations = v.annotator.items
@@ -788,6 +791,7 @@ final class CaptureSession {
             let corner = beauty != nil || wallpaperBehind ? 0 : insets.isZero ? windowCorner : 0
             var c = CapturedImage(image: img, screenRect: screenRect, scale: scale, hdr: hdr, screenHeadroom: self.screenHeadroom)
             c.pinned = pin
+            c.captureType = kind == .window ? "window" : kind == .screen ? "display" : "selection"
             if pin {
                 // 马上钉出来（截图界面在它下面淡掉），文件在后台照常存、挂上截图架
                 self.delivered = true
@@ -838,6 +842,9 @@ final class CaptureSession {
         v.setScrolling(true)
         win.ignoresMouseEvents = true
         stitcher = ScrollStitcher()
+        // 新的拼接从 0 开始数，上一次的计数留着会让"有没有新变化"判断很久都是否
+        lastRejected = 0
+        lastInPlace = 0
         scrollView = v
         let screenRect = sel.offsetBy(dx: win.frame.minX, dy: win.frame.minY)
 
@@ -881,10 +888,18 @@ final class CaptureSession {
         scrollScale = scale
         lastPointerInSelection = nil
         let windowID = v.kind == .window ? v.selectedWindowID : nil
+        let st = stitcher
         Task { @MainActor [weak self] in
             // 先把要截的东西准备好（一次就好，之后每帧直接用）
-            self?.scrollSource = await Self.scrollSource(screen: screen, rect: screenRect, windowID: windowID, scale: scale)
-            guard let self, self.stitcher != nil else { return }
+            let src = await Self.scrollSource(screen: screen, rect: screenRect, windowID: windowID, scale: scale)
+            // 准备期间关掉又重新开了一次：这是上一次的，不要
+            guard let self, let st, self.stitcher === st else { return }
+            guard let src else {
+                (self.scrollBarPanel?.content as? ScrollBar)?.setState(.warning("Can't capture this area"))
+                return
+            }
+            self.scrollTimer?.invalidate()
+            self.scrollSource = src
             // 每 0.08 秒截一下（截图界面和我们的面板不截进去）
             self.scrollTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.grabScrollFrame() }
@@ -940,6 +955,10 @@ final class CaptureSession {
         var grew = false, rejected = 0, lost = false, frameCount = 0, moving = false, hasContent = false
         /// 自动滚动那一栏最远到过哪（像素）；nil：那里还没认出在滚
         var autoFarthest: Int?
+        /// 那一栏原地变化过几次（页面没挪、里面一块小框在滚）
+        var autoInPlace = 0
+        /// 算这一帧时看的是哪一栏（自动滚动的 x）
+        var autoXUsed: CGFloat?
         var preview: CGImage?, previewHeight = 0
     }
 
@@ -951,13 +970,22 @@ final class CaptureSession {
             if let c = src.crop, let full = img { img = full.cropping(to: c.intersection(CGRect(x: 0, y: 0, width: full.width, height: full.height))) }
             guard let self else { return }
             self.scrollBusy = false
-            guard let img, self.stitcher === st else { return }
+            guard let img, self.stitcher === st || self.finishingStitcher === st else { return }
             self.notePointer()
             self.stitchInFlight += 1
             let autoX: CGFloat? = self.autoScroller != nil ? self.autoX : nil
             let wantPreview = Date().timeIntervalSince(self.lastPreviewAt) > 0.25
             let width = (ScrollPreview.width - 14) * (self.scrollPreviewPanel?.backingScaleFactor ?? 2)
             self.stitchQueue.async {
+                #if DEBUG
+                // 调试：QC_SCROLL_RECORD=文件夹 时把每一帧原样存下来（拿去离线重放拼接）
+                if let dir = ProcessInfo.processInfo.environment["QC_SCROLL_RECORD"] {
+                    let url = URL(fileURLWithPath: dir).appendingPathComponent(String(format: "frame-%04d.png", st.frameCount))
+                    if let d = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) {
+                        CGImageDestinationAddImage(d, img, nil); CGImageDestinationFinalize(d)
+                    }
+                }
+                #endif
                 var r = StitchReport()
                 r.grew = st.add(img)
                 r.rejected = st.rejected
@@ -965,7 +993,8 @@ final class CaptureSession {
                 r.frameCount = st.frameCount
                 r.moving = st.moving
                 r.hasContent = st.hasContent
-                if let x = autoX { r.autoFarthest = st.lane(atX: x)?.farthest }
+                r.autoXUsed = autoX
+                if let x = autoX, let l = st.lane(atX: x) { r.autoFarthest = l.farthest; r.autoInPlace = l.inPlaceChanges }
                 if (r.grew && wantPreview) || r.frameCount == 1, let full = st.image(preview: true) {
                     r.preview = Self.previewImage(full, width: width)
                     r.previewHeight = full.height
@@ -985,7 +1014,12 @@ final class CaptureSession {
         lastRejected = r.rejected
         if r.moving { lastMovedAt = CACurrentMediaTime() }
         if autoScroller != nil {
-            autoScrollCheck(farthest: r.autoFarthest, rejected: rejected, grew: r.grew)
+            // 原地变化（指针下面的小框在滚）和帧对不上一样，都说明有东西在动、可页面没挪
+            // 换栏后还在路上的旧帧算的是旧那一栏；新栏还没认出来时计数也不算数：都不拿来当起点
+            let sameLane = r.autoXUsed == autoX && r.autoFarthest != nil
+            let inner = sameLane && lastInPlace >= 0 && r.autoInPlace > lastInPlace
+            if sameLane { lastInPlace = r.autoInPlace }
+            autoScrollCheck(farthest: r.autoFarthest, rejected: rejected, inner: inner, grew: r.grew)
         } else if r.lost {
             // 对不上了：接下去会漏，提示往回滚一点（对上了马上恢复）
             bar?.setState(.warning("Too fast, scroll back a little"))
@@ -999,6 +1033,11 @@ final class CaptureSession {
         if let p = r.preview { showScrollPreview(p, pixelHeight: r.previewHeight) }
     }
     private var lastRejected = 0
+    private var lastInPlace = 0
+    /// 按了 Done、正在出图的那次拼接（还在路上的那一帧要接进去）
+    private var finishingStitcher: ScrollStitcher?
+    /// 自动滚动在什么高度滚（换栏、换位置时保持用户指针的高度，不跳到选区中线）
+    private var autoY: CGFloat = 0
     private var lastMovedAt: CFTimeInterval = 0
     /// 自动滚动停下时条上的话（"Reached the End"）：用户再自己滚之前一直显示
     private var autoNote: String?
@@ -1084,11 +1123,41 @@ final class CaptureSession {
             bar?.setState(.warning("Allow QuickCap in Accessibility"))
             return
         }
+        autoTried = []
+        autoTrace = []
+        autoTraceStart = CACurrentMediaTime()
+        autoHopped = false
+        autoRelocations = 0
+        autoOriginX = nil
+        autoEdgeTried = false
+        autoJiggled = false
+        autoPointerFallback = nil
+        var p = autoScrollPoint()
+        // 从指针附近页边的空白开始滚（压在内容上的话，下面可能是页面里一块自己能滚的小框，滚的是它不是页面）
+        if let st = stitcher, scrollRect.width > 0 {
+            let x = (p.x - scrollRect.minX) / scrollRect.width
+            if let bx = stitchQueue.sync(execute: { st.blankColumn(near: x) }) {
+                autoPointerFallback = p
+                p.x = scrollRect.minX + bx * scrollRect.width
+                autoStopNote = "blank x=\(String(format: "%.2f", bx))"
+            }
+        }
+        // 指针下面那一栏算试过了（滚完它再去别的地方）
+        let c = Int((scrollRect.width > 0 ? (p.x - scrollRect.minX) / scrollRect.width : 0.5) * CGFloat(ScrollLane.cols))
+        autoTried.append(max(0, c - 1)...min(ScrollLane.cols - 1, c + 1))
+        startAuto(at: p, home: nil)
+    }
+
+    /// 在这里开始自动滚动（屏幕坐标）。home：停下后指针回到哪（接着滚另一栏时用上一次的）
+    private func startAuto(at p: CGPoint, home: CGPoint?) {
+        autoY = p.y
+        // 换到另一栏：下一帧拿新那一栏现在的计数当起点（-1 表示还没拿）
+        lastInPlace = -1
+        let bar = scrollBarPanel?.content as? ScrollBar
         // 速度：一秒滚过选区一半左右（看得清在滚什么、来得及停）
         let speed = min(max(scrollRect.height * 0.5, 200), 480)
-        let p = autoScrollPoint()
         autoX = scrollRect.width > 0 ? (p.x - scrollRect.minX) / scrollRect.width : 0.5
-        let a = AutoScroller(at: p, speed: speed)
+        let a = AutoScroller(at: p, speed: speed, home: home)
         a.onUserMoved = { [weak self] in
             guard let self, self.autoScroller === a else { return }
             self.autoScroller = nil
@@ -1101,6 +1170,7 @@ final class CaptureSession {
         autoSamples = []
         autoEndedAt = nil
         endChecks = 0
+        autoStalls = 0
         autoBest = nil
         autoNormal = 1
         autoNote = nil
@@ -1123,10 +1193,12 @@ final class CaptureSession {
     /// 截了一帧：看是不是到底了。
     /// 到底的样子：滚轮一直在发，画面却不怎么挪（停住了，或者被往上拉过头、有阻力地慢慢挪）。只看指针下面那一栏。
     /// 看起来到底了不马上停：先停住 0.6 秒（页面弹回来，网页可能在加载更多），再接着滚；连着 3 次都滚不动才真的停
-    private func autoScrollCheck(farthest: Int?, rejected: Bool, grew: Bool) {
+    private func autoScrollCheck(farthest: Int?, rejected: Bool, inner: Bool = false, grew: Bool) {
         guard let a = autoScroller else { return }
         let now = CACurrentMediaTime()
+        // 对不上：滚太快了，慢一点。原地变化（小框在滚）不用慢
         if rejected { a.slowDown() }
+        if rejected || inner { lastRejectAt = now }
         // 停住在看：到时间了接着滚
         if let h = holdUntil {
             guard now >= h else { return }
@@ -1136,19 +1208,58 @@ final class CaptureSession {
             a.resume()
             return
         }
+        // 刚挪过滚动点、重新开始滚：新的一次滚动要一会儿才跑起来，这段时间不判断（以前挪过去半秒就又判成不动，马上又挪）
+        // （挪之前那一下滚动的惯性也在这段时间里滑完：挪过去以后有没有动，从这段时间结束算起）
+        if now < autoGraceUntil {
+            if let f = farthest { let m = CGFloat(f) / scrollScale; if m > (autoBest ?? 0) { autoBest = m } }
+            autoBestAtRelocate = autoBest ?? autoBestAtRelocate
+            lastGrowth = now; autoSamples = []; return
+        }
         // 指针下面那一栏：还没认出来就先不判断（还在看是不是在滚）
         guard let farthest else {
             autoStopNote = "noLane x=\(String(format: "%.2f", autoX))"
             if grew { lastGrowth = now }
-            if now - lastGrowth > 2.5 { endAutoScroll(a, note: "Nothing to scroll here") }
+            // 从页边的空白开始滚，一秒多了还没东西在动：那块空白下面不是能滚的东西（两栏之间的缝、侧边栏外面的边），
+            // 回到指针原来的地方滚
+            if let fb = autoPointerFallback, now - lastGrowth > 1.2 {
+                autoPointerFallback = nil
+                let home = a.homeLocation
+                a.stop(immediately: true, restore: false)
+                autoScroller = nil
+                autoStopNote = "fallback"
+                startAuto(at: fb, home: home)
+                pauseBeforeNewTarget()
+                return
+            }
+            if now - lastGrowth > 2.5 { autoReachedEnd(a, note: "Nothing to scroll here") }
             return
+        }
+        autoPointerFallback = nil
+        // 一认出在滚的这一栏，就把滚动点挪到它的边上：网页里一栏的边多半是页边的空白，
+        // 自己能滚的小框（预览框、代码块、宽表格）都在中间，压在上面滚轮会被它接走、页面不动
+        if autoRelocations == 0 && !autoEdgeTried {
+            autoEdgeTried = true
+            if autoBest == nil { autoBest = CGFloat(farthest) / scrollScale }
+            if relocateAuto(a) { return }
         }
         // 这一栏最远滚到过哪（只会变大）：往上拉过头、回弹、对不上的帧都不会让它乱跳
         let moved = CGFloat(farthest) / scrollScale
         if autoBest == nil { autoBest = moved }
-        if moved > (autoBest ?? 0) + 1 { autoBest = moved; lastGrowth = now }
-        // 兜底：这一栏好一阵子没再往下（一直对不上、到底了却判断不出来）
-        if now - lastGrowth > 2 { autoStopNote = "stalled"; endAutoScroll(a, note: "Reached the end"); return }
+        if moved > (autoBest ?? 0) + 1 { autoBest = moved; lastGrowth = now; autoStalls = 0 }
+        // 这一栏好一阵子没再往下：先别当成到底了。指针下面可能是页面里一块自己能滚的小框（预览框、代码块）：
+        // 浏览器在一次连续的滚动里一直把滚轮交给它，它滚到底就整个不动了。松开、重新开始一次滚动，
+        // 浏览器会把新的一次交给外面还能滚的页面。试三次都不动才真的停（以前一停就算到底，页面中间有小框时只截到一半）
+        if now - lastGrowth > 2 {
+            if revertIfEdgeDead(a) { return }
+            if now - lastRejectAt < 1.5, relocateAuto(a) { return }
+            autoStalls += 1
+            if autoStalls >= 3 { autoStopNote = "stalled"; autoReachedEnd(a, note: "Reached the end"); return }
+            autoStopNote = "stall#\(autoStalls)"
+            a.hold()
+            holdUntil = now + 0.6
+            autoSamples = []
+            return
+        }
         autoSamples.append((now, a.sentTotal, moved))
         // 拿离现在 0.45 秒以上的样本里最近的那个比（截图慢、两帧隔得远时也一定有得比）
         while autoSamples.count > 1, now - autoSamples[1].t >= 0.45 { autoSamples.removeFirst() }
@@ -1158,11 +1269,20 @@ final class CaptureSession {
         let ratio = dm / sent
         // 平常每发 1pt 画面挪多少（每个 app 不一样，有的会放大缩小）：滚得顺的时候慢慢学
         if ratio > 0.5 * autoNormal { autoNormal = autoNormal * 0.8 + min(ratio, 3) * 0.2 }
-        // 到底：挪的不到平常的一半（停住了，或者被往上拉过头、有阻力地慢慢挪）
-        if ratio < 0.5 * autoNormal {
+        // 到底：几乎不挪了（不到平常的 15%）。只是慢（网页太重、浏览器跟不上，挪平常的一两成到一半）不算到底，接着滚；
+        // 拉过头、有阻力地慢慢挪的，弹回来以后就不再往下了，上面"好一阵子没往下"会接住
+        // （以前挪的不到一半就算，几百行的长表格滚到后面浏览器变慢，截到一半就停了）
+        if ratio < 0.15 * autoNormal {
+            if revertIfEdgeDead(a) { return }
+            if now - lastRejectAt < 1.5, relocateAuto(a) { return }
             endChecks += 1
             autoStopNote = "end#\(endChecks) sent=\(Int(sent)) moved=\(Int(dm)) normal=\(String(format: "%.2f", autoNormal))"
-            if endChecks >= 3 { endAutoScroll(a, note: "Reached the end"); return }
+            if endChecks >= 3 {
+                // 真的到底之前再试一次：把滚动点左右挪一小段。浏览器偶尔在停一下、重新开始滚以后就不理这里的滚轮了，
+                // 换个地方就又滚得动；真的到底了，换地方也不会动
+                if !autoJiggled, jiggleAuto(a) { return }
+                autoReachedEnd(a, note: "Reached the end"); return
+            }
             // 先停住 0.6 秒（页面弹回来，网页可能在加载更多），再接着滚
             a.hold()
             holdUntil = now + 0.6
@@ -1172,9 +1292,135 @@ final class CaptureSession {
             endChecks = 0
         }
     }
+    /// 这一栏连着几次好一阵子没往下（见上面：松开再滚）
+    private var autoStalls = 0
+    /// 最近一次有帧对不上、这一栏里挪过几次滚动点
+    private var lastRejectAt: CFTimeInterval = 0
+    private var autoRelocations = 0
+    /// 到这个时间之前不判断到没到底（刚挪过滚动点）
+    private var autoGraceUntil: CFTimeInterval = 0
+
+    /// 把滚动点挪到这一栏的边上（往里半列）：第一次（一认出这一栏）挪到右边；
+    /// 之后这一栏不动了、可是画面里有东西在变（帧对不上、原地变化：还压在一块自己能滚的小框上）时挪到左边
+    private func relocateAuto(_ a: AutoScroller, toX given: CGFloat? = nil) -> Bool {
+        guard autoRelocations < 2 else { return false }
+        let x: CGFloat
+        if let given {
+            x = given
+        } else {
+            // 这一栏边上的空白页边：先右边、再左边（第二次挪时换另一边）。边上就是内容（表格的按钮、会悬停变色的行）就不挪
+            guard let st = stitcher else { return false }
+            let ax = autoX, first = autoRelocations == 0, triedRight = autoTriedRight
+            // lane(atX:) 读拼接里的数组，要和拼接在同一条队列上
+            let (c, right): (Int?, Int?) = stitchQueue.sync {
+                guard let l = st.lane(atX: ax) else { return (nil, nil) }
+                let rc = l.marginColumn(right: true)
+                if first { return (rc ?? l.marginColumn(right: false), rc) }
+                return (l.marginColumn(right: !triedRight), rc)
+            }
+            guard let c else { return false }
+            if first { autoTriedRight = right == c }
+            x = (CGFloat(c) + 0.5) / CGFloat(ScrollLane.cols)
+        }
+        if autoRelocations == 0 { autoOriginX = autoX; autoBestAtRelocate = autoBest ?? 0 }
+        autoRelocations += 1
+        let home = a.homeLocation
+        a.stop(immediately: true, restore: false)
+        autoScroller = nil
+        autoStopNote = given != nil ? "revert" : "relocate#\(autoRelocations)"
+        startAuto(at: CGPoint(x: scrollRect.minX + x * scrollRect.width, y: autoY), home: home)
+        pauseBeforeNewTarget()
+        return true
+    }
+
+    /// 挪到边上以后这一栏一点都没再往下（一栏认出来的范围常常带着旁边不动的空白，边上其实已经不在这一栏里了，
+    /// 滚的是别的东西）：挪回原来的地方
+    private func revertIfEdgeDead(_ a: AutoScroller) -> Bool {
+        guard autoRelocations == 1, let ox = autoOriginX, (autoBest ?? 0) <= autoBestAtRelocate + 1 else { return false }
+        return relocateAuto(a, toX: ox)
+    }
+    /// 换了滚的地方：先停一下再滚。浏览器会把一次滚动锁在开始时指针下面的那个东西上，紧接着的下一次还锁着它
+    /// （刚才滚的页面），新地方的 nav 一点都不动；停 0.45 秒锁就过了。停的这段和接下来一会儿都不判断到没到底
+    private func pauseBeforeNewTarget() {
+        let now = CACurrentMediaTime()
+        autoScroller?.hold()
+        holdUntil = now + 0.45
+        autoGraceUntil = now + 0.45 + 1.2
+    }
+    private var autoOriginX: CGFloat?
+    /// 从页边空白开始滚时，指针原来的位置（那里滚不动就回来）
+    private var autoPointerFallback: CGPoint?
+    /// 第一次挪到的是右边的页边（第二次就去左边）
+    private var autoTriedRight = false
+    /// 这一栏已经左右挪过一小段再试了
+    private var autoJiggled = false
+
+    /// 滚动点往这一栏中间挪 60 点左右，再滚一次
+    private func jiggleAuto(_ a: AutoScroller) -> Bool {
+        guard scrollRect.width > 0 else { return false }
+        autoJiggled = true
+        let dx = 60 / scrollRect.width
+        var cols: ClosedRange<Int>?
+        if let st = stitcher { let ax = autoX; cols = stitchQueue.sync { st.lane(atX: ax)?.columns } }
+        let mid = cols.map { (CGFloat($0.lowerBound + $0.upperBound) / 2 + 0.5) / CGFloat(ScrollLane.cols) } ?? 0.5
+        let x = autoX < mid ? autoX + dx : autoX - dx
+        let home = a.homeLocation
+        a.stop(immediately: true, restore: false)
+        autoScroller = nil
+        autoStopNote = "jiggle"
+        let keepRel = autoRelocations, keepEdge = autoEdgeTried
+        startAuto(at: CGPoint(x: scrollRect.minX + x * scrollRect.width, y: autoY), home: home)
+        autoRelocations = keepRel; autoEdgeTried = keepEdge
+        pauseBeforeNewTarget()
+        return true
+    }
+    /// 这一栏已经试过一认出来就挪到页边
+    private var autoEdgeTried = false
+    private var autoBestAtRelocate: CGFloat = 0
     /// 这一栏最远到过哪（pt）、平常每发 1pt 画面挪多少
     private var autoBest: CGFloat?
     private var autoNormal: CGFloat = 1
+
+    /// 自动滚动滚完一栏：选区里还有一大块没人拼的地方（左边的 nav、右边的面板）就挪过去接着滚，那里也滚不动了才真的停。
+    /// 网页常常是 nav 和内容各自能滚，两边都要滚到底，截出来才是完整的
+    private func autoReachedEnd(_ a: AutoScroller, note: String) {
+        var noHop = false
+        #if DEBUG
+        // 调试：QC_AUTO_NO_HOP=1 时滚完指针所在的这一栏就停，不挪到别的栏去（只想截某一栏滚动、别的栏不动的页面）
+        noHop = ProcessInfo.processInfo.environment["QC_AUTO_NO_HOP"] != nil
+        #endif
+        guard let st = stitcher, !noHop, let x = nextAutoX(st) else {
+            if note == "Nothing to scroll here", autoHopped { endAutoScroll(a, note: "Reached the end") } else { endAutoScroll(a, note: note) }
+            return
+        }
+        let home = a.homeLocation
+        a.stop(immediately: true, restore: false)
+        autoScroller = nil
+        autoHopped = true
+        autoRelocations = 0
+        autoOriginX = nil
+        autoEdgeTried = false
+        autoJiggled = false
+        startAuto(at: CGPoint(x: scrollRect.minX + x * scrollRect.width, y: autoY), home: home)
+        pauseBeforeNewTarget()
+    }
+
+    /// 下一个去滚的地方（选区里从左往右的 0...1）：没人拼的、最宽的那段的中间，试过的不再试
+    private func nextAutoX(_ st: ScrollStitcher) -> CGFloat? {
+        // 只去不比已经滚过的那一栏宽很多的地方（nav、聊天列表这类侧栏）。宽很多的（滚的是侧边栏，旁边是整个网页）不去：
+        // 用户指着的是侧边栏，把整个网页也滚一遍，长图会被网页拉得很长
+        let (spansAll, widest) = stitchQueue.sync { (st.unclaimedSpans(minWidth: ScrollLane.cols / 10), st.widestSettledLane) }
+        let spans = spansAll
+            .filter { span in !autoTried.contains { $0.overlaps(span) } }
+            // 一段没人拼的地方常常还带着旁边不能滚的东西（竖的标签栏），宽一点不算：宽到一倍半以上才不去
+            .filter { $0.count * 2 < widest * 3 }
+        guard let best = spans.max(by: { $0.count < $1.count }) else { return nil }
+        autoTried.append(best)
+        return (CGFloat(best.lowerBound + best.upperBound) / 2 + 0.5) / CGFloat(ScrollLane.cols)
+    }
+    /// 这一轮自动滚动试过的列、有没有挪到别的栏去过
+    private var autoTried: [ClosedRange<Int>] = []
+    private var autoHopped = false
 
     /// 自动滚动到头了：马上停，按钮、字变回来
     private func endAutoScroll(_ a: AutoScroller, note: String) {
@@ -1236,6 +1482,8 @@ final class CaptureSession {
             return
         }
         stopScrolling()
+        // 正在截的那一帧回来还要拼进去（不然最后一截可能丢）
+        finishingStitcher = st
         stitcher = nil
         scrollView = nil
         performing = true
@@ -1248,6 +1496,9 @@ final class CaptureSession {
             guard let self else { return }
             let q = self.stitchQueue
             let out: CGImage? = await withCheckedContinuation { c in q.async { c.resume(returning: UnsafeImage(st.image())) } }.image
+            self.finishingStitcher = nil
+            // 出图途中按了 Esc、切了桌面：截图界面已经关了，不再弹编辑窗口
+            guard !self.ending else { return }
             guard let img = out, let screen = win.screen else { NSSound.beep(); self.finish(animated: true); return }
             // 拼好的长图不直接交出去：在屏幕中间接着看、画、加背景，按 Capture 才存（Esc 不要）
             // 截的是窗口：出图和截窗口一样（窗口圆角、窗口影子，按设置，按住 ⌥ 反过来）
@@ -1267,10 +1518,17 @@ final class CaptureSession {
         }
     }
 
+    var debugAutoRunning: Bool { autoScroller != nil || finishPending }
     func debugScrollTip() { (scrollBarPanel?.content as? ScrollBar)?.debugShowAutoTip() }
+    var debugAutoTrace: String { autoTrace.joined(separator: " | ") }
     var debugScroll: String { (stitcher.map { st in stitchQueue.sync { st.debugText } } ?? "not scrolling") + " auto=[\(lastAuto?.debug ?? "-")] stopNote=\(autoStopNote) bar=\((scrollBarPanel?.content as? ScrollBar).map { "\($0.state)" } ?? "-")" }
     private weak var lastAuto: AutoScroller?
-    private var autoStopNote = "-"
+    private var autoStopNote = "-" {
+        didSet { if autoStopNote != oldValue { autoTrace.append(String(format: "%.1f x=%.2f best=%.0f ", CACurrentMediaTime() - autoTraceStart, autoX, autoBest ?? -1) + autoStopNote) } }
+    }
+    /// 调试：自动滚动每一步的决定（时间、在哪里滚、这一栏最远到过哪）
+    private var autoTrace: [String] = []
+    private var autoTraceStart: CFTimeInterval = CACurrentMediaTime()
 
     // MARK: 扫描（Scan 模式）
 
@@ -1365,6 +1623,12 @@ final class CaptureSession {
         bar.onPrimary = { [weak self] in self?.runScanAction() }
         bar.onCopy = { ScanActions.copy($0) }
         bar.onNext = { [weak self] in self?.nextCode() }
+        bar.onSetUp = { [weak self] in
+            guard let self else { return }
+            self.handedOff = true
+            self.finish(animated: true)
+            if !ScanActions.perform(c) { self.handedOff = false; NSSound.beep() }
+        }
         v.show(scanBar: bar, for: r)
     }
 
@@ -1397,6 +1661,20 @@ final class CaptureSession {
         case .text:
             ScanActions.copy(c.copyText)
             CaptureToast.show("Copied", at: at)
+            finish(animated: true)
+        case .oneTimeCode(let a):
+            // 回车复制现在的验证码；快换了（最后 5 秒）就等下一个，免得粘过去已经过期
+            if let left = a.secondsLeft(), left <= 5 {
+                CaptureToast.show("New code in \(Int(left.rounded(.up)))s…", symbol: "clock", at: at, hold: left + 0.3)
+                finish(animated: true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + left + 0.05) {
+                    ScanActions.copy(a.code())
+                    CaptureToast.show("Copied \(OTPAccount.spaced(a.code()))", at: at)
+                }
+                return
+            }
+            ScanActions.copy(a.code())
+            CaptureToast.show("Copied \(OTPAccount.spaced(a.code()))", at: at)
             finish(animated: true)
         default:
             guard c.action != nil else {
@@ -1486,6 +1764,7 @@ final class CaptureSession {
         if hasSelection {
             let cmd = event.modifierFlags.contains(.command)
             if cmd, event.charactersIgnoringModifiers?.lowercased() == "z" {
+                activeOverlay?.commitText()
                 if event.modifierFlags.contains(.shift) { activeOverlay?.annotator.redo() } else { activeOverlay?.annotator.undo() }
                 return true
             }
@@ -1730,7 +2009,8 @@ final class CaptureSession {
     /// 截图界面开着时又按了快捷键：同一个就关掉；Text 和普通截图之间就换模式
     func hotkeyPressed(mode m: CaptureMode?) {
         let target = m ?? (mode == .text ? (settings.captureMode == .window ? .window : .area) : mode)
-        if target == mode || performing || countingDown { cancel(); return }
+        // 滚动截图中途按别的截图快捷键：直接关掉（清掉选区会让滚动截图收不了尾，暗层一直留着）
+        if target == mode || performing || countingDown || stitcher != nil { cancel(); return }
         clearAllSelections()
         pick(target)
     }

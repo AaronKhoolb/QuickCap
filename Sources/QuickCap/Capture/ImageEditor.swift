@@ -325,7 +325,8 @@ final class EditorView: NSView {
         actionBar.onRun = { [weak self] out in self?.editor?.primary(out) }
         actionBar.onEditSave = { [weak self] how in self?.editor?.primary(save: how) }
         actionBar.onTool = { [weak self] t in self?.selectTool(t) }
-        actionBar.onUndo = { [weak self] in self?.annotator.undo() }
+        // 正在打字时先收尾：撤销会挪动标注的序号，打字框按旧序号写回会写到别的标注上
+        actionBar.onUndo = { [weak self] in self?.commitText(); self?.annotator.undo() }
         actionBar.onBeauty = { [weak self] in self?.toggleBeauty() }
         actionBar.onPin = { [weak self] in self?.editor?.primary(pin: true) }
         actionBar.onResize = { [weak self] in self?.layoutBars() }
@@ -889,6 +890,7 @@ final class EditorView: NSView {
             switch ch {
             case "z":
                 // ⇧⌘Z 重做（cmd 只看 ⌘⌃⌥，Shift 要单独看）
+                commitText()
                 if event.modifierFlags.contains(.shift) { annotator.redo() } else { annotator.undo() }
                 return true
             case "c":

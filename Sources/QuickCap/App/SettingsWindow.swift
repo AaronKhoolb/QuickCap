@@ -348,10 +348,12 @@ private final class LoginItem: ObservableObject {
     init() {
         refresh()
         // 用户去系统设置里批准了、回到这个窗口：重新看一下状态（红字该消失就消失）
-        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+        observer = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
     }
+    private var observer: NSObjectProtocol?
+    deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
 
     /// 要等用户在系统设置里批准的也算开着（勾着、下面一行提示），不然刚勾上马上自己取消，像没点上
     func refresh() {
