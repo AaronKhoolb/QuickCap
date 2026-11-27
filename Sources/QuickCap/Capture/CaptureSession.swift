@@ -1133,8 +1133,10 @@ final class CaptureSession {
         autoJiggled = false
         autoPointerFallback = nil
         var p = autoScrollPoint()
+        // 用户自己把指针放在选区里了：就在那里滚，指针一下都不挪（不挪到页边、不左右试、滚完也不跳去别的栏）
+        autoPinned = lastPointerInSelection != nil
         // 从指针附近页边的空白开始滚（压在内容上的话，下面可能是页面里一块自己能滚的小框，滚的是它不是页面）
-        if let st = stitcher, scrollRect.width > 0 {
+        if !autoPinned, let st = stitcher, scrollRect.width > 0 {
             let x = (p.x - scrollRect.minX) / scrollRect.width
             if let bx = stitchQueue.sync(execute: { st.blankColumn(near: x) }) {
                 autoPointerFallback = p
@@ -1303,7 +1305,7 @@ final class CaptureSession {
     /// 把滚动点挪到这一栏的边上（往里半列）：第一次（一认出这一栏）挪到右边；
     /// 之后这一栏不动了、可是画面里有东西在变（帧对不上、原地变化：还压在一块自己能滚的小框上）时挪到左边
     private func relocateAuto(_ a: AutoScroller, toX given: CGFloat? = nil) -> Bool {
-        guard autoRelocations < 2 else { return false }
+        guard !autoPinned, autoRelocations < 2 else { return false }
         let x: CGFloat
         if let given {
             x = given
@@ -1357,7 +1359,7 @@ final class CaptureSession {
 
     /// 滚动点往这一栏中间挪 60 点左右，再滚一次
     private func jiggleAuto(_ a: AutoScroller) -> Bool {
-        guard scrollRect.width > 0 else { return false }
+        guard !autoPinned, scrollRect.width > 0 else { return false }
         autoJiggled = true
         let dx = 60 / scrollRect.width
         var cols: ClosedRange<Int>?
@@ -1376,6 +1378,8 @@ final class CaptureSession {
     }
     /// 这一栏已经试过一认出来就挪到页边
     private var autoEdgeTried = false
+    /// 这一轮在用户放指针的地方滚，不挪指针
+    private var autoPinned = false
     private var autoBestAtRelocate: CGFloat = 0
     /// 这一栏最远到过哪（pt）、平常每发 1pt 画面挪多少
     private var autoBest: CGFloat?
@@ -1389,7 +1393,7 @@ final class CaptureSession {
         // 调试：QC_AUTO_NO_HOP=1 时滚完指针所在的这一栏就停，不挪到别的栏去（只想截某一栏滚动、别的栏不动的页面）
         noHop = ProcessInfo.processInfo.environment["QC_AUTO_NO_HOP"] != nil
         #endif
-        guard let st = stitcher, !noHop, let x = nextAutoX(st) else {
+        guard let st = stitcher, !noHop, !autoPinned, let x = nextAutoX(st) else {
             if note == "Nothing to scroll here", autoHopped { endAutoScroll(a, note: "Reached the end") } else { endAutoScroll(a, note: note) }
             return
         }

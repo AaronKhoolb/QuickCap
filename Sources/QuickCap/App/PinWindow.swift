@@ -159,18 +159,22 @@ final class PinWindow: NSPanel {
             let f = clipboardFolder.appendingPathComponent("Pin \(UUID().uuidString.prefix(8)).png")
             if (try? png.write(to: f, options: .atomic)) != nil { url = f }
         }
-        guard let url, let (img, hdr) = loadImage(url) else { return false }
+        guard let url, let (img, hdr) = loadImage(url), let rect = centeredRect(for: img) else { return false }
+        pin(image: img, hdr: hdr, rect: rect, fileURL: url)
+        return true
+    }
+
+    /// 钉在鼠标所在屏幕的中间：按屏幕的像素倍数显示，太大就缩到四周各留 60pt
+    static func centeredRect(for img: CGImage) -> CGRect? {
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main ?? NSScreen.screens.first
-        else { return false }
+        else { return nil }
         let k = screen.backingScaleFactor
         var size = CGSize(width: CGFloat(img.width) / k, height: CGFloat(img.height) / k)
         let maxS = screen.visibleFrame.insetBy(dx: 60, dy: 60).size
         let fit = min(1, maxS.width / size.width, maxS.height / size.height)
         size = CGSize(width: (size.width * fit).rounded(), height: (size.height * fit).rounded())
         let v = screen.visibleFrame
-        let rect = CGRect(x: v.midX - size.width / 2, y: v.midY - size.height / 2, width: size.width, height: size.height)
-        pin(image: img, hdr: hdr, rect: rect, fileURL: url)
-        return true
+        return CGRect(x: v.midX - size.width / 2, y: v.midY - size.height / 2, width: size.width, height: size.height)
     }
 
     /// 剪贴板里有能钉的图吗（菜单项灰不灰）

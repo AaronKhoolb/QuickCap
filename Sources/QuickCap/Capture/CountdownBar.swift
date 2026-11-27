@@ -65,35 +65,13 @@ final class CancelPill: BarButton {
 
 /// 放倒数条的小面板：在截图界面上面一层、能点；不抢焦点
 @MainActor
-final class CountdownPanel: NSPanel {
-    let bar = CountdownBar()
-    /// 条外面留一圈给阴影
-    static let margin: CGFloat = 24
+final class CountdownPanel: FloatingPanel {
+    let bar: CountdownBar
 
     init() {
-        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = false
-        isFloatingPanel = true
-        hidesOnDeactivate = false
-        becomesKeyOnlyIfNeeded = true
-        level = NSWindow.Level(rawValue: CaptureOverlayWindow.captureLevel.rawValue + 1)
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
-        animationBehavior = .none
-        isReleasedWhenClosed = false
-        let v = NSView()
-        v.wantsLayer = true
-        contentView = v
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        v.addSubview(bar)
-        let m = Self.margin
-        NSLayoutConstraint.activate([
-            bar.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: m),
-            bar.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -m),
-            bar.topAnchor.constraint(equalTo: v.topAnchor, constant: m),
-            bar.bottomAnchor.constraint(equalTo: v.bottomAnchor, constant: -m),
-        ])
+        let b = CountdownBar()
+        bar = b
+        super.init(content: b)
     }
 
     override var canBecomeKey: Bool { true }

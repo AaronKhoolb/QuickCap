@@ -219,7 +219,6 @@ final class ShelfView: NSView {
         wake()
     }
 
-    var debugLinkPaused: Bool { displayLink?.isPaused ?? true }
     /// 最后一次还在动的时间（停了以后再空转一会儿才停）
     private var lastActiveAt: CFTimeInterval = 0
 

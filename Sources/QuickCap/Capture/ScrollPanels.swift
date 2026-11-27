@@ -116,7 +116,7 @@ final class ScrollBar: GlassBar {
 
 /// 装一根玻璃条或一块预览的小面板。浮在截图界面上面，能点；外面留一圈给阴影
 @MainActor
-final class FloatingPanel: NSPanel {
+class FloatingPanel: NSPanel {
     static let margin: CGFloat = 24
     let content: NSView
 

@@ -936,9 +936,23 @@ final class ScrollLane {
     fileprivate static func cutAtBottom(_ img: CGImage, x0: Int, x1: Int, split: Int, corner: Int) -> Bool {
         let bottom = img.height - corner
         guard bottom - split >= 6, let p = plane(img, CGRect(x: x0, y: 0, width: x1 - x0, height: bottom)) else { return false }
-        let clean = cleanRows(p)
-        // 底边上面那几行都干净：最底下那块上下都留着空，是贴在底下的东西（按钮、头像），照原来的放
-        guard ((bottom - 4)..<bottom).contains(where: { !clean[$0] }) else { return false }
+        // 底边上面那几行都干净：最底下那块上下都留着空，是贴在底下的东西（按钮、头像），照原来的放。
+        // 圆角那几行也要看：大圆角的窗口（macOS 26）圆角有 40 多行，左下角的头像、账号那一行就在圆角那几行里，
+        // 只看圆角上面的话会当成"一直排到底被切掉了"，整块用底色盖掉。圆角那几行只看不碰到透明点的那几列
+        var lo = 0, hi = p.w
+        if corner > 0, let q = plane(img, CGRect(x: x0, y: img.height - corner, width: x1 - x0, height: corner)) {
+            func clear(_ x: Int) -> Bool { (0..<q.h).contains { q.px[($0 * q.w + x) * 4 + 3] < 255 } }
+            while lo < hi, clear(lo) { lo += 1 }
+            while hi > lo, clear(hi - 1) { hi -= 1 }
+        }
+        if hi - lo >= max(24, p.w / 4), let inner = plane(img, CGRect(x: x0 + lo, y: 0, width: hi - lo, height: img.height)) {
+            let c = cleanRows(inner), H = img.height
+            // 最底下一两行是窗口的边框，不看
+            guard ((H - 6)..<(H - 2)).contains(where: { !c[$0] }) else { return false }
+        } else {
+            let clean = cleanRows(p)
+            guard ((bottom - 4)..<bottom).contains(where: { !clean[$0] }) else { return false }
+        }
         func dominant(_ y0: Int, _ y1: Int) -> ((Int, Int, Int), Double) {
             var count = [Int: (n: Int, r: Int, g: Int, b: Int)]()
             var total = 0
@@ -1465,8 +1479,6 @@ final class ScrollStitcher: @unchecked Sendable {
     private static let maxLanes = 4
     private(set) var frameCount = 0
 
-    /// 正在看、还没定下来的那一栏（最后一个）
-    private var watching: ScrollLane? { lanes.last.flatMap { $0.isSettled ? nil : $0 } }
     private var settledLanes: [ScrollLane] { lanes.filter(\.isSettled) }
 
     var height: Int { lanes.map(\.height).max() ?? 0 }
@@ -1572,9 +1584,6 @@ final class ScrollStitcher: @unchecked Sendable {
         }
         return nil
     }
-
-    /// 调试用：某一栏单独出的图
-    func debugLaneImage(_ i: Int) -> CGImage? { i < lanes.count ? lanes[i].image() : nil }
 
     func image(preview: Bool = false) -> CGImage? {
         if !preview { lanes.forEach { $0.finish() } }

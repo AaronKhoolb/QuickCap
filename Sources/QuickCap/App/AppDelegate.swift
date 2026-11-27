@@ -506,15 +506,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let src = CGImageSourceCreateWithURL(item.url as CFURL, nil),
               let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { NSSound.beep(); return }
         let hdr = CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR] as CFDictionary)
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main ?? NSScreen.screens.first
-        else { NSSound.beep(); return }
-        let k = screen.backingScaleFactor
-        var size = CGSize(width: CGFloat(img.width) / k, height: CGFloat(img.height) / k)
-        let maxS = screen.visibleFrame.insetBy(dx: 60, dy: 60).size
-        let fit = min(1, maxS.width / size.width, maxS.height / size.height)
-        size = CGSize(width: (size.width * fit).rounded(), height: (size.height * fit).rounded())
-        let v = screen.visibleFrame
-        let rect = CGRect(x: v.midX - size.width / 2, y: v.midY - size.height / 2, width: size.width, height: size.height)
+        guard let rect = PinWindow.centeredRect(for: img) else { NSSound.beep(); return }
         let gm = CGImageSourceCopyAuxiliaryDataInfoAtIndex(src, 0, kCGImageAuxiliaryDataTypeISOGainMap) != nil
         _ = PinWindow.pin(image: img, hdr: gm ? hdr : nil, rect: rect, fileURL: item.url)
     }
